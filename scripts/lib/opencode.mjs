@@ -10,43 +10,38 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Read-only tool surface. The agent may inspect the repository but must not
- * change it, install anything, or reach the network.
+ * Every tool opencode ships, all switched off.
+ *
+ * The prompt carries the whole diff, so the model needs no tools at all. This
+ * is not just belt-and-braces: a tool call is what broke the first live run.
+ * The model emitted one, opencode ended the session without executing it and
+ * exited 0 having produced nothing. Disabling the tools means they are never
+ * offered in the first place.
+ *
+ * The wildcard is a defensive catch-all in case this version of opencode gains
+ * a tool name not listed here; unknown keys are simply ignored otherwise.
  */
-const READ_ONLY_BASH = [
-  'git diff',
-  'git diff *',
-  'git log',
-  'git log *',
-  'git show',
-  'git show *',
-  'git status',
-  'git status *',
-  'git ls-files',
-  'git ls-files *',
-  'git rev-parse',
-  'git rev-parse *',
-  'git grep *',
-  'git blame *',
-  'grep *',
-  'rg *',
-  'ls',
-  'ls *',
-  'find *',
-  'head *',
-  'tail *',
-  'sed -n *',
-  'wc *',
-  'pwd',
+const DISABLED_TOOLS = [
+  '*',
+  'bash',
+  'edit',
+  'write',
+  'patch',
+  'multiedit',
+  'read',
+  'grep',
+  'glob',
+  'list',
+  'webfetch',
+  'task',
+  'todowrite',
+  'todoread',
+  'skill',
 ];
-// Note: `cat` is deliberately absent. Combined with a checkout that persisted
-// credentials it would expose the token in .git/config. The checkout uses
-// persist-credentials: false, and opencode's native file reader plus
-// head/tail/sed cover legitimate reading, so this costs nothing.
 
 export function buildConfig({ model, smallModel }) {
-  const bash = { '*': 'deny' };
-  for (const command of READ_ONLY_BASH) bash[command] = 'allow';
+  const tools = {};
+  for (const tool of DISABLED_TOOLS) tools[tool] = false;
 
   return {
     $schema: 'https://opencode.ai/config.json',
@@ -55,10 +50,13 @@ export function buildConfig({ model, smallModel }) {
     // ever exported, so letting opencode pick a cross-provider default would
     // fail with no credentials.
     small_model: smallModel || model,
+    tools,
+    // Redundant given `tools`, but cheap: if a tool were somehow still offered,
+    // it is denied rather than executed.
     permission: {
       edit: 'deny',
       webfetch: 'deny',
-      bash,
+      bash: { '*': 'deny' },
     },
   };
 }
@@ -293,7 +291,8 @@ export function runOpencode({
   cwd,
   configFile,
   env = process.env,
-  timeoutMs = 12 * 60 * 1000,
+  // The prompt is self-contained, so there is no exploration loop to wait for.
+  timeoutMs = 5 * 60 * 1000,
   spawnImpl = spawn,
 }) {
   return new Promise((resolve, reject) => {

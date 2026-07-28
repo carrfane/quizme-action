@@ -22,6 +22,7 @@ import {
   withNudge,
 } from './comment.mjs';
 import { gradeQuiz } from './grade.mjs';
+import { collectDiff } from './diff.mjs';
 import { renderPrompt, extractQuiz, validateQuiz, writeConfig, runOpencode } from './opencode.mjs';
 
 const GENERATE_ATTEMPTS = 2;
@@ -95,12 +96,28 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
   const workdir = deps.workdir ?? process.cwd();
   const tmpdir = deps.tmpdir ?? process.env.RUNNER_TEMP ?? workdir;
 
+  const diff = await (deps.collectDiff ?? collectDiff)({
+    cwd: workdir,
+    baseSha: decision.baseSha,
+    headSha: decision.headSha,
+    baseRef: decision.baseRef,
+  });
+
+  if (!diff.patch) {
+    throw new Error(
+      `Could not read a diff for ${diff.range} in ${workdir}. Nothing to build a quiz from.`,
+    );
+  }
+  log(`quizme: diff range ${diff.range}, ${diff.patch.length} characters${diff.truncated ? ' (truncated)' : ''}`);
+
   const template = await (deps.readPrompt ?? readPromptFile)();
   const prompt = renderPrompt(template, {
     QUESTION_COUNT: inputs.questionCount,
-    BASE_SHA: decision.baseSha,
-    HEAD_SHA: decision.headSha,
     BASE_REF: decision.baseRef,
+    RANGE: diff.range,
+    COMMITS: diff.commits || '(no commit list available)',
+    DIFF_STAT: diff.stat || '(no summary available)',
+    DIFF: diff.patch,
   });
 
   const configFile = await (deps.writeConfig ?? writeConfig)({
@@ -119,9 +136,7 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
 
   const raw = extractQuiz(stdout);
   if (!raw) {
-    throw new Error(
-      `Could not find a JSON quiz in the model output. Last 400 characters: ${String(stdout).slice(-400)}`,
-    );
+    throw new Error(describeMissingQuiz(stdout));
   }
   return validateQuiz(raw, inputs.questionCount);
 }
@@ -293,6 +308,22 @@ async function findQuizComment(client, prNumber) {
 
 async function upsert(client, prNumber, existing, body) {
   return existing ? client.updateComment(existing.id, body) : client.createComment(prNumber, body);
+}
+
+/**
+ * A run that exits cleanly with no quiz has one common cause worth naming: the
+ * model tried to call a tool. opencode then ends the session without executing
+ * it and exits 0, which is silent and baffling otherwise.
+ */
+function describeMissingQuiz(stdout) {
+  const text = String(stdout ?? '');
+  const endedOnToolCall = /"reason":"tool-calls"/.test(text);
+  const hint = endedOnToolCall
+    ? ' The session ended on a tool call, which quizme does not enable — the prompt must be ' +
+      'self-contained. This usually means the prompt stopped telling the model that it has no tools.'
+    : '';
+
+  return `Could not find a JSON quiz in the model output.${hint} Last 400 characters: ${text.slice(-400)}`;
 }
 
 function readPromptFile() {

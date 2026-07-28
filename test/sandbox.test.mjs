@@ -1,6 +1,10 @@
 /**
- * The agent reads your source code with a model. These tests pin the sandbox so
- * a careless allowlist edit cannot quietly widen it.
+ * The model is handed your source code as text. These tests pin the sandbox so
+ * a careless edit cannot quietly widen it.
+ *
+ * The posture is deliberately absolute: the prompt is self-contained, so every
+ * tool is disabled. That is both the tightest sandbox and the fix for the bug
+ * that broke the first live run, where a tool call silently ended the session.
  */
 
 import { test } from 'node:test';
@@ -13,81 +17,42 @@ import { buildConfig } from '../scripts/lib/opencode.mjs';
 
 const root = new URL('../', import.meta.url);
 const action = parse(readFileSync(new URL('action.yml', root), 'utf8'));
+const config = () => buildConfig({ model: 'openai/gpt-5.5' });
 
-const allowed = () =>
-  Object.entries(buildConfig({ model: 'openai/gpt-5.5' }).permission.bash)
-    .filter(([, value]) => value === 'allow')
-    .map(([pattern]) => pattern);
-
-test('bash is deny by default', () => {
-  assert.equal(buildConfig({ model: 'm' }).permission.bash['*'], 'deny');
+test('every tool is disabled, including a wildcard catch-all', () => {
+  const { tools } = config();
+  assert.equal(tools['*'], false, 'unknown future tools must default to off');
+  for (const tool of ['bash', 'edit', 'write', 'read', 'grep', 'glob', 'list', 'webfetch', 'task']) {
+    assert.equal(tools[tool], false, `${tool} must be disabled`);
+  }
 });
 
-test('editing, and reaching the network, are denied', () => {
-  const permission = buildConfig({ model: 'm' }).permission;
+test('no tool is ever enabled', () => {
+  const enabled = Object.entries(config().tools).filter(([, on]) => on !== false);
+  assert.deepEqual(enabled, [], 'nothing may be switched on');
+});
+
+test('permissions still deny mutation and network as a second layer', () => {
+  const { permission } = config();
   assert.equal(permission.edit, 'deny');
   assert.equal(permission.webfetch, 'deny');
+  assert.equal(permission.bash['*'], 'deny');
 });
 
-test('no allowlisted command can mutate the repository or escape the sandbox', () => {
-  const forbidden = [
-    'rm',
-    'mv',
-    'cp',
-    'chmod',
-    'curl',
-    'wget',
-    'nc',
-    'ssh',
-    'npm',
-    'npx',
-    'pip',
-    'node',
-    'python',
-    'sh',
-    'bash',
-    'eval',
-    'env',
-    'printenv',
-    'export',
-    'git push',
-    'git commit',
-    'git checkout',
-    'git config',
-    'git remote',
-    'git apply',
-    'git clean',
-    'git reset',
-  ];
-
-  for (const command of forbidden) {
-    for (const pattern of allowed()) {
-      assert.ok(
-        pattern !== command && !pattern.startsWith(`${command} `),
-        `"${pattern}" must not be allowlisted (matches ${command})`,
-      );
-    }
-  }
+test('no bash command is allowlisted any more', () => {
+  // The old read-only allowlist is gone: with tools disabled it was dead weight,
+  // and an allowlist invites additions that would reopen the hole.
+  const allowed = Object.entries(config().permission.bash).filter(([, v]) => v === 'allow');
+  assert.deepEqual(allowed, [], 'nothing may be allowlisted');
 });
 
-test('cat is not allowlisted, so a stray git credential stays unreadable', () => {
-  // Defence in depth alongside persist-credentials: false. `cat .git/config`
-  // would print an auth extraheader if one were ever persisted.
-  for (const pattern of allowed()) {
-    assert.ok(!pattern.startsWith('cat'), '`cat` must stay off the allowlist');
-  }
+test('the sandbox survives an explicit small_model', () => {
+  const withSmall = buildConfig({ model: 'openai/gpt-5.5', smallModel: 'openai/gpt-5.4-mini' });
+  assert.equal(withSmall.tools['*'], false);
+  assert.equal(withSmall.permission.bash['*'], 'deny');
 });
 
-test('every allowlisted git subcommand is read-only', () => {
-  const readOnly = new Set(['diff', 'log', 'show', 'status', 'ls-files', 'rev-parse', 'grep', 'blame']);
-  for (const pattern of allowed()) {
-    if (!pattern.startsWith('git ')) continue;
-    const subcommand = pattern.split(' ')[1];
-    assert.ok(readOnly.has(subcommand), `git ${subcommand} is not a known read-only subcommand`);
-  }
-});
-
-test('the checkout never persists git credentials into the agent workspace', () => {
+test('the checkout never persists git credentials into the workspace', () => {
   const checkout = action.runs.steps.find((step) => step.uses?.startsWith('actions/checkout'));
   assert.equal(checkout.with['persist-credentials'], false);
 });
@@ -128,4 +93,12 @@ test('key-env.mjs exits non-zero on an unknown provider', () => {
       }),
     /api_key_env/,
   );
+});
+
+test('the prompt tells the model it has no tools', () => {
+  // If this instruction is ever lost, the model will try to explore, the session
+  // will end on a tool call, and generation will fail with no quiz.
+  const prompt = readFileSync(new URL('prompts/generate.md', root), 'utf8');
+  assert.match(prompt, /no \*\*tools\*\*|\*\*no tools\*\*/i);
+  assert.match(prompt, /\{\{DIFF\}\}/, 'the diff must be embedded in the prompt');
 });

@@ -61,8 +61,15 @@ function fakeClient(comments = []) {
 }
 
 const okDeps = (over = {}) => ({
-  readPrompt: async () => 'count={{QUESTION_COUNT}} base={{BASE_SHA}} head={{HEAD_SHA}} ref={{BASE_REF}}',
+  readPrompt: async () => 'count={{QUESTION_COUNT}} range={{RANGE}} ref={{BASE_REF}} diff={{DIFF}}',
   writeConfig: async () => '/tmp/cfg.json',
+  collectDiff: async () => ({
+    range: 'cccc2222...aaaa1111bbbb',
+    stat: ' src/a.js | 2 +-',
+    patch: '--- a/src/a.js\n+++ b/src/a.js\n-old\n+new',
+    commits: 'abc1234 Do the thing',
+    truncated: false,
+  }),
   runOpencode: async () => JSON.stringify({ type: 'text', text: JSON.stringify(quiz) }),
   ...over,
 });
@@ -101,7 +108,7 @@ test('generate posts a quiz and blocks the PR with a pending status', async () =
   ]);
 });
 
-test('generate substitutes the diff range into the prompt', async () => {
+test('generate embeds the diff in the prompt instead of relying on tools', async () => {
   const seen = {};
   await runMode({
     decision: decision(),
@@ -116,8 +123,64 @@ test('generate substitutes the diff range into the prompt', async () => {
     log: silent,
   });
 
-  assert.equal(seen.prompt, 'count=3 base=cccc2222 head=aaaa1111bbbb ref=main');
+  assert.equal(
+    seen.prompt,
+    'count=3 range=cccc2222...aaaa1111bbbb ref=main diff=--- a/src/a.js\n+++ b/src/a.js\n-old\n+new',
+  );
   assert.equal(seen.model, 'anthropic/claude-sonnet-4-5');
+});
+
+test('generate passes the PR range to the diff collector', async () => {
+  const seen = {};
+  await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client: fakeClient(),
+    deps: okDeps({
+      collectDiff: async (args) => {
+        Object.assign(seen, args);
+        return { range: 'r', stat: 's', patch: 'p', commits: 'c', truncated: false };
+      },
+    }),
+    log: silent,
+  });
+
+  assert.equal(seen.baseSha, 'cccc2222');
+  assert.equal(seen.headSha, 'aaaa1111bbbb');
+  assert.equal(seen.baseRef, 'main');
+});
+
+test('generate fails open when there is no readable diff', async () => {
+  const client = fakeClient();
+  const result = await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client,
+    deps: okDeps({
+      collectDiff: async () => ({ range: 'x...y', stat: '', patch: '', commits: '', truncated: false }),
+    }),
+    log: silent,
+  });
+
+  assert.equal(result.action, 'generate-failed');
+  assert.equal(client.calls.statuses[0].state, 'success');
+  assert.match(client.calls.created[0].body, /Could not read a diff/);
+});
+
+test('a run that ends on a tool call explains itself', async () => {
+  const client = fakeClient();
+  const result = await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client,
+    deps: okDeps({
+      runOpencode: async () => JSON.stringify({ type: 'step_finish', part: { reason: 'tool-calls' } }),
+    }),
+    log: silent,
+  });
+
+  assert.equal(result.action, 'generate-failed');
+  assert.match(client.calls.created[0].body, /ended on a tool call/);
 });
 
 test('generate updates the existing quiz comment instead of stacking a second', async () => {

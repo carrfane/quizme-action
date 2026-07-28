@@ -209,13 +209,28 @@ other actors' clicks are ignored.
 }
 ```
 
-Read-only bash allowlist (`git diff|log|show|ls-files|rev-parse|grep|status`,
-`rg`, `grep`, `ls`, `head`, `tail`, `sed -n`, `wc`, `pwd`). Agent is `plan`.
+> **Superseded during implementation.** The original design had the agent explore
+> the repository with a read-only bash allowlist. That does not work: on the
+> first live run the model emitted a tool call, opencode ended the session
+> without executing it and exited 0 having produced no quiz — no tool event, no
+> permission event, no error event. opencode's non-interactive permission
+> semantics could not be reproduced locally, so rather than guess at
+> configuration, the dependency on tool use was removed.
+>
+> **Actual design:** `scripts/lib/diff.mjs` collects the diff with `git`
+> (`--stat`, the full patch truncated to 60,000 characters, and the commit list)
+> and embeds it in the prompt. Every opencode tool is disabled via
+> `tools: { "*": false, ... }`, with the permission denials kept as a redundant
+> second layer. The range falls back from `baseSha...headSha` to
+> `origin/<baseRef>...HEAD` to `HEAD~1...HEAD` so a force-push or rebase cannot
+> break it.
+>
+> Consequences: generation is cheaper, faster, deterministic and has no sandbox
+> to escape. The model sees the diff rather than the whole repository, so
+> "blast radius" questions are weaker than originally intended.
 
-Command: `opencode run --format json --model <model> --agent plan <prompt>` with
-cwd `quizme-pr`. The prompt gives the base and head SHAs and instructs the agent
-to explore with git itself rather than receiving a pre-dumped diff — this keeps
-the prompt small and handles large diffs naturally.
+Agent is `plan`. Command: `opencode run --format json --model <model> --agent
+plan <prompt>` with cwd `quizme-pr`.
 
 Required output is strict JSON, last assistant message only:
 

@@ -12,8 +12,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile, readFile, mkdir, chmod } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import { main } from '../scripts/main.mjs';
 import {
@@ -151,6 +155,10 @@ async function scenario({ eventName, payload, comments, files, inputs = {} }) {
   await mkdir(prDir, { recursive: true });
   await writeFile(eventPath, JSON.stringify(payload), 'utf8');
   await writeFile(outputPath, '', 'utf8');
+  // A real repository with real history, so collectDiff runs for real rather
+  // than being stubbed out. The fixture shas are not present, so it exercises
+  // the HEAD~1 fallback path.
+  await seedGitRepo(prDir);
 
   const env = {
     GITHUB_TOKEN: 'test-token',
@@ -173,6 +181,25 @@ async function scenario({ eventName, payload, comments, files, inputs = {} }) {
     outputs: async () => parseOutputs(await readFile(outputPath, 'utf8')),
     cleanup: () => github.close(),
   };
+}
+
+async function seedGitRepo(dir) {
+  const git = (...args) => execFileAsync('git', args, { cwd: dir });
+  await git('init', '-q', '-b', 'main');
+  await git('config', 'user.email', 'test@example.com');
+  await git('config', 'user.name', 'Test');
+  await git('config', 'commit.gpgsign', 'false');
+
+  await writeFile(path.join(dir, 'app.mjs'), 'export const LIMIT = 1;\n', 'utf8');
+  await git('add', '.');
+  await git('commit', '-q', '-m', 'Initial commit');
+
+  // HEAD must be genuinely ahead of the base branch, otherwise the range
+  // resolves to an empty diff and generation correctly refuses to run.
+  await git('checkout', '-q', '-b', 'feature');
+  await writeFile(path.join(dir, 'app.mjs'), 'export const LIMIT = 5;\nexport const RETRIES = 3;\n', 'utf8');
+  await git('add', '.');
+  await git('commit', '-q', '-m', 'Raise the limit');
 }
 
 function parseOutputs(text) {
@@ -392,8 +419,10 @@ test('e2e: a missing opencode binary fails open with an explanation', async (t) 
 
   await main(['--phase=resolve'], s.env);
 
+  // git must stay reachable (the diff is collected before the model runs);
+  // only opencode disappears.
   const originalPath = process.env.PATH;
-  process.env.PATH = '/nonexistent';
+  process.env.PATH = '/usr/bin:/bin';
   try {
     await main(['--phase=run'], s.env);
   } finally {

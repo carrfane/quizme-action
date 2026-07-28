@@ -29,24 +29,28 @@ const question = (over = {}) => ({
   ...over,
 });
 
-test('buildConfig denies mutation and allows only read-only bash', () => {
+test('buildConfig disables every tool and denies mutation', () => {
+  // The prompt carries the diff, so the model needs no tools. Disabling them is
+  // also the fix for a tool call silently ending the session mid-run.
   const config = buildConfig({ model: 'openai/gpt-5.5' });
   assert.equal(config.model, 'openai/gpt-5.5');
+  assert.equal(config.tools['*'], false);
+  assert.equal(config.tools.bash, false);
+  assert.equal(config.tools.read, false);
+  assert.deepEqual(
+    Object.entries(config.tools).filter(([, on]) => on !== false),
+    [],
+    'no tool may be enabled',
+  );
+
   assert.equal(config.permission.edit, 'deny');
   assert.equal(config.permission.webfetch, 'deny');
   assert.equal(config.permission.bash['*'], 'deny');
-  assert.equal(config.permission.bash['git diff *'], 'allow');
-  assert.equal(config.permission.bash['rg *'], 'allow');
-
-  const allowed = Object.entries(config.permission.bash)
-    .filter(([, v]) => v === 'allow')
-    .map(([k]) => k);
-  for (const dangerous of ['rm', 'curl', 'npm', 'git push', 'git commit', 'sh', 'eval']) {
-    assert.ok(
-      !allowed.some((pattern) => pattern.startsWith(dangerous)),
-      `${dangerous} must not be allowlisted`,
-    );
-  }
+  assert.deepEqual(
+    Object.entries(config.permission.bash).filter(([, v]) => v === 'allow'),
+    [],
+    'no bash command may be allowlisted',
+  );
 });
 
 test('buildConfig pins small_model to the primary model by default', () => {

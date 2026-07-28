@@ -200,6 +200,15 @@ comment in a base64 blob, so grading needs no second model call, no checkout and
 no extra secret. One model call per quiz, and none at all for grading,
 bypassing, carrying or skipping.
 
+**The model gets no tools.** quizme collects the diff itself with `git` and
+embeds it in the prompt; every opencode tool is switched off. This started as a
+bug fix — when the model was allowed to explore, it emitted a tool call, opencode
+ended the session without executing it and exited 0 having produced nothing — but
+it is better anyway: cheaper, faster, deterministic, and there is no sandbox to
+escape. The cost is that the model sees the diff rather than the whole
+repository, so questions about distant blast radius are weaker. Large diffs are
+truncated at 60,000 characters.
+
 **It fails open.** A model outage, a malformed response, a corrupt key — all of
 them unblock the PR and tell you what happened. This is a discipline aid, not a
 security control, and it must never wedge your repository.
@@ -421,6 +430,7 @@ exercised by CI here.
 | `scripts/lib/modes.mjs` | The five handlers, and every fail-open path |
 | `scripts/lib/comment.mjs` | Comment rendering, parsing and the answer-key codec |
 | `scripts/lib/eligibility.mjs` | Skip rules and their precedence |
+| `scripts/lib/diff.mjs` | Collects the diff with `git`, with fallbacks for force-pushes |
 | `scripts/lib/opencode.mjs` | CLI config, spawn, output extraction and validation |
 | `scripts/lib/github.mjs` | REST client over injectable `fetch` |
 | `prompts/generate.md` | The quiz generation prompt |
@@ -429,10 +439,12 @@ exercised by CI here.
 
 Design notes live in `docs/superpowers/specs/`.
 
-The action is sandboxed while reading your code: `edit: deny`, `webfetch: deny`,
-`bash: "*": deny` with an explicit read-only allowlist (`git diff`, `rg`, `sed
--n` and friends), running under opencode's `plan` agent with
-`persist-credentials: false` on the checkout.
+The model never executes anything. All opencode tools are disabled
+(`tools: { "*": false, ... }`), with `edit: deny`, `webfetch: deny` and
+`bash: { "*": deny }` as a redundant second layer. It runs under the `plan`
+agent, and the checkout uses `persist-credentials: false` so no git credential
+is ever written into the workspace. The only input the model receives is the
+diff text quizme collected.
 
 ## Licence
 
