@@ -10,6 +10,7 @@
  */
 
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 import { readInputs, apiKeyEnvFor } from './lib/config.mjs';
@@ -104,8 +105,10 @@ function requireEnv(env, name) {
   return value;
 }
 
+// pathToFileURL rather than string concatenation: a workspace path containing a
+// space would otherwise never match, and the action would silently do nothing.
 const invokedDirectly =
-  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   main().catch((error) => {

@@ -1,0 +1,139 @@
+name: quizme
+description: Quiz a pull request author on their own diff, and block merge until they answer.
+author: carrfane
+
+branding:
+  icon: help-circle
+  color: purple
+
+inputs:
+  api_key:
+    description: >-
+      API key for the model provider. Pass this from a repository secret.
+      It is exported under the env var implied by `model`, or by `api_key_env`.
+    required: true
+  model:
+    description: Model to use, as `provider/model` (for example `openai/gpt-5.5`).
+    required: false
+    default: anthropic/claude-sonnet-4-5
+  api_key_env:
+    description: >-
+      Override the environment variable the API key is exported as. Required for
+      providers quizme does not know about.
+    required: false
+    default: ''
+  users:
+    description: >-
+      Comma or newline separated GitHub logins the quiz applies to.
+      Leave empty to apply to every human contributor. Bots are always skipped.
+    required: false
+    default: ''
+  question_count:
+    description: Number of questions per quiz (1-10).
+    required: false
+    default: '3'
+  enabled:
+    description: Set to `false` to turn quizme off without removing the workflow.
+    required: false
+    default: 'true'
+  ignore_paths:
+    description: >-
+      Newline separated globs. The quiz is skipped when every changed file
+      matches. Set to `none` to disable path filtering.
+    required: false
+    default: |
+      docs/**
+      **/*.md
+      **/*.mdx
+      **/README
+      **/LICENSE
+      **/CHANGELOG
+  min_changed_lines:
+    description: Skip the quiz when additions plus deletions is below this number.
+    required: false
+    default: '0'
+  opencode_version:
+    description: Pinned opencode CLI version.
+    required: false
+    default: 1.18.4
+  status_context:
+    description: Commit status context. This is the name you add to branch protection.
+    required: false
+    default: quizme
+  github_token:
+    description: >-
+      Token used for the REST API. The calling job must grant `statuses: write`
+      and `issues: write`.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  mode:
+    description: One of generate, carry, grade, bypass, skip or none.
+    value: ${{ steps.resolve.outputs.mode }}
+  reason:
+    description: Human readable explanation of the chosen mode.
+    value: ${{ steps.resolve.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    # Decides what this event means. Cheap: no checkout, no model call.
+    - id: resolve
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_API_KEY_ENV: ${{ inputs.api_key_env }}
+        INPUT_USERS: ${{ inputs.users }}
+        INPUT_QUESTION_COUNT: ${{ inputs.question_count }}
+        INPUT_ENABLED: ${{ inputs.enabled }}
+        INPUT_IGNORE_PATHS: ${{ inputs.ignore_paths }}
+        INPUT_MIN_CHANGED_LINES: ${{ inputs.min_changed_lines }}
+        INPUT_STATUS_CONTEXT: ${{ inputs.status_context }}
+      run: node "$GITHUB_ACTION_PATH/scripts/main.mjs" --phase=resolve
+
+    # Only a generate needs the code, the history, and a model.
+    - if: steps.resolve.outputs.mode == 'generate'
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.resolve.outputs.head_sha }}
+        fetch-depth: 0
+        path: quizme-pr
+        persist-credentials: false
+
+    - if: steps.resolve.outputs.mode == 'generate'
+      shell: bash
+      env:
+        OPENCODE_VERSION: ${{ inputs.opencode_version }}
+      run: |
+        set -euo pipefail
+        if command -v opencode >/dev/null 2>&1; then
+          echo "opencode already present: $(opencode --version)"
+          exit 0
+        fi
+        npm install --global --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}"
+        opencode --version
+
+    - if: steps.resolve.outputs.mode != 'none'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        QUIZME_WORKDIR: ${{ github.workspace }}/quizme-pr
+        QUIZME_API_KEY: ${{ inputs.api_key }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_API_KEY_ENV: ${{ inputs.api_key_env }}
+        INPUT_USERS: ${{ inputs.users }}
+        INPUT_QUESTION_COUNT: ${{ inputs.question_count }}
+        INPUT_ENABLED: ${{ inputs.enabled }}
+        INPUT_IGNORE_PATHS: ${{ inputs.ignore_paths }}
+        INPUT_MIN_CHANGED_LINES: ${{ inputs.min_changed_lines }}
+        INPUT_STATUS_CONTEXT: ${{ inputs.status_context }}
+      run: |
+        set -euo pipefail
+        # Export the key under whatever name this provider expects, without ever
+        # echoing the key itself.
+        key_env="$(node "$GITHUB_ACTION_PATH/scripts/key-env.mjs")"
+        export "${key_env}=${QUIZME_API_KEY}"
+        unset QUIZME_API_KEY
+        node "$GITHUB_ACTION_PATH/scripts/main.mjs" --phase=run

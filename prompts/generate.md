@@ -20,6 +20,14 @@ git diff {{BASE_SHA}}...{{HEAD_SHA}}
 git log --oneline {{BASE_SHA}}..{{HEAD_SHA}}
 ```
 
+If the base commit is not present locally (a rebase or force-push can leave it
+unreachable), fall back to the base branch instead — it is always fetched:
+
+```
+git diff origin/{{BASE_REF}}...HEAD --stat
+git diff origin/{{BASE_REF}}...HEAD
+```
+
 Read the surrounding code too, not just the diff. A question about a function's
 callers or about what a removed guard was protecting is far more valuable than a
 question about a renamed variable. You have read-only access: you cannot edit

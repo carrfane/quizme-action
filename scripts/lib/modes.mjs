@@ -218,13 +218,30 @@ async function bypass({ decision, inputs, client, log }) {
 }
 
 async function skip({ decision, inputs, client, log }) {
-  await client.setStatus({
+  const status = {
     sha: decision.headSha,
     state: 'success',
     context: inputs.statusContext,
     description: `Not applicable: ${decision.reason}`,
     targetUrl: decision.prUrl,
-  });
+  };
+
+  try {
+    await client.setStatus(status);
+  } catch (error) {
+    // A fork's `pull_request` token is read-only, so this 403 is expected and
+    // must not paint a red X on a contributor's PR. Every other 403 is a real
+    // misconfiguration and still fails loudly.
+    if (decision.forkSkip && / with 403 /.test(error.message)) {
+      log(
+        'quizme: cannot write a commit status on a fork pull request (read-only token). ' +
+          'If quizme is a required check, a maintainer can comment "/quizme skip" to unblock it.',
+      );
+      return { action: 'skip-fork-unreported', reason: decision.reason };
+    }
+    throw error;
+  }
+
   log(`quizme: skipped (${decision.reason})`);
   return { action: 'skip', reason: decision.reason };
 }

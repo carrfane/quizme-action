@@ -1,0 +1,126 @@
+name: quizme
+
+# Reusable workflow. Consumers call this and get all the trigger filtering for
+# free. See README.md for the caller snippet.
+#
+# The `if:` below is the cheap gate: `issue_comment` fires on every comment in
+# the repository, and this keeps a runner from ever starting for the 99% that are
+# not quiz traffic. It is also loop protection guard #2 -- our own grading edit
+# unticks Submit, so the edited body no longer matches.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Model to use, as `provider/model`.
+        type: string
+        required: false
+        default: anthropic/claude-sonnet-4-5
+      api_key_env:
+        description: Override the env var the API key is exported as.
+        type: string
+        required: false
+        default: ''
+      users:
+        description: Logins the quiz applies to. Empty means every human contributor.
+        type: string
+        required: false
+        default: ''
+      question_count:
+        description: Questions per quiz (1-10).
+        type: number
+        required: false
+        default: 3
+      enabled:
+        description: Set false to disable without removing the workflow.
+        type: boolean
+        required: false
+        default: true
+      ignore_paths:
+        description: Newline separated globs; skip when every changed file matches. `none` disables.
+        type: string
+        required: false
+        default: |
+          docs/**
+          **/*.md
+          **/*.mdx
+          **/README
+          **/LICENSE
+          **/CHANGELOG
+      min_changed_lines:
+        description: Skip below this many changed lines.
+        type: number
+        required: false
+        default: 0
+      opencode_version:
+        description: Pinned opencode CLI version.
+        type: string
+        required: false
+        default: 1.18.4
+      status_context:
+        description: Commit status context; the name to require in branch protection.
+        type: string
+        required: false
+        default: quizme
+      runs_on:
+        description: Runner label.
+        type: string
+        required: false
+        default: ubuntu-latest
+    secrets:
+      api_key:
+        description: API key for the model provider.
+        required: true
+
+jobs:
+  quizme:
+    # Grading must not be cancelled halfway through, so no cancel-in-progress.
+    concurrency:
+      group: quizme-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+
+    if: >-
+      (
+        github.event_name == 'pull_request' &&
+        contains(fromJSON('["opened","reopened","ready_for_review","synchronize"]'), github.event.action)
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        (
+          (
+            contains(github.event.comment.body, '<!-- quizme:quiz') &&
+            contains(github.event.comment.body, '- [x] **Submit answers**')
+          ) ||
+          startsWith(github.event.comment.body, '/quizme')
+        )
+      )
+
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 20
+
+    steps:
+      # Fetch the action at exactly the ref the caller pinned. `job_workflow_sha`
+      # is the commit of *this* reusable workflow, so the action code can never
+      # drift from the version the consumer asked for.
+      - name: Check out quizme-action
+        uses: actions/checkout@v4
+        with:
+          repository: carrfane/quizme-action
+          ref: ${{ github.job_workflow_sha }}
+          path: .quizme
+          persist-credentials: false
+
+      - name: Run quizme
+        uses: ./.quizme
+        with:
+          api_key: ${{ secrets.api_key }}
+          model: ${{ inputs.model }}
+          api_key_env: ${{ inputs.api_key_env }}
+          users: ${{ inputs.users }}
+          question_count: ${{ inputs.question_count }}
+          enabled: ${{ inputs.enabled }}
+          ignore_paths: ${{ inputs.ignore_paths }}
+          min_changed_lines: ${{ inputs.min_changed_lines }}
+          opencode_version: ${{ inputs.opencode_version }}
+          status_context: ${{ inputs.status_context }}
+          github_token: ${{ github.token }}

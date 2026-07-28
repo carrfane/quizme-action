@@ -1,0 +1,32 @@
+name: self-quiz
+
+# Dogfooding: quizme quizzes its own pull requests.
+#
+# This is also the end-to-end test. Unit tests cover the logic; only a real PR
+# proves the trigger filtering, the clickable checkboxes and the commit status
+# work against the actual GitHub API.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  quizme:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: write
+    uses: ./.github/workflows/quizme.yml
+    with:
+      model: anthropic/claude-sonnet-4-5
+      users: carrfane
+      question_count: 3
+      # This repo is mostly its own docs, so quiz on code changes only.
+      ignore_paths: |
+        docs/**
+        **/*.md
+    secrets:
+      api_key: ${{ secrets.ANTHROPIC_API_KEY }}

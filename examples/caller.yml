@@ -1,0 +1,50 @@
+# Copy this to .github/workflows/quizme.yml in your repository.
+#
+# It must live on your DEFAULT branch: issue_comment events always run the
+# workflow version found there, which is how checkbox clicks get back here.
+
+name: quizme
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # `edited` is what a checkbox click produces. Without it, submitting does nothing.
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  quizme:
+    # Required. A called workflow cannot grant itself more than its caller has,
+    # so these must be here and not in the reusable workflow.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: write
+
+    uses: carrfane/quizme-action/.github/workflows/quizme.yml@v1
+
+    with:
+      model: anthropic/claude-sonnet-4-5
+
+      # Who the gate applies to. Omit to apply to every human contributor.
+      # Bots are always skipped regardless.
+      users: your-github-login
+
+      question_count: 3
+
+      # Skip the quiz when every changed file matches one of these.
+      # Set to `none` to quiz on documentation changes too.
+      ignore_paths: |
+        docs/**
+        **/*.md
+        **/*.mdx
+
+      # Optional: do not bother me about a two-line change.
+      # min_changed_lines: 20
+
+      # Optional: flip to false to switch quizme off without deleting this file.
+      # enabled: false
+
+    secrets:
+      api_key: ${{ secrets.ANTHROPIC_API_KEY }}

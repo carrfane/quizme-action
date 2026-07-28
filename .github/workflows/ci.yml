@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Verify the action itself has no runtime dependencies
+        run: |
+          set -euo pipefail
+          # The runner installs nothing for the action, so scripts/ must import
+          # only node: builtins and relative paths. yaml is a devDependency used
+          # by tests alone.
+          offenders="$(grep -rnE "from\s+['\"][^.]" scripts/ | grep -v "from ['\"]node:" || true)"
+          if [ -n "$offenders" ]; then
+            echo "::error::scripts/ must only import node: builtins and relative paths"
+            echo "$offenders"
+            exit 1
+          fi
+          echo "scripts/ is dependency free"
+
+      - name: Syntax check every script
+        run: |
+          set -euo pipefail
+          find scripts -name '*.mjs' -print0 | xargs -0 -n1 node --check
+          echo "all scripts parse"

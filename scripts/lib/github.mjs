@@ -81,13 +81,26 @@ export function createClient({
      * list, so a commit status on the head sha is the only thing that works
      * across every mode.
      */
-    setStatus: ({ sha, state, context, description, targetUrl }) =>
-      json('POST', `/statuses/${sha}`, {
-        state,
-        context,
-        description: clampDescription(description),
-        target_url: targetUrl,
-      }),
+    setStatus: async ({ sha, state, context, description, targetUrl }) => {
+      try {
+        return await json('POST', `/statuses/${sha}`, {
+          state,
+          context,
+          description: clampDescription(description),
+          target_url: targetUrl,
+        });
+      } catch (error) {
+        // By far the most common setup mistake, and the raw 403 explains nothing.
+        if (/ with 403 /.test(error.message)) {
+          throw new Error(
+            `${error.message}\n\nquizme could not write a commit status. The job that calls ` +
+              'quizme must grant `statuses: write` (a called workflow cannot escalate ' +
+              "its caller's permissions). See the README setup section.",
+          );
+        }
+        throw error;
+      }
+    },
   };
 }
 

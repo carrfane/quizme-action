@@ -12,7 +12,7 @@
  *   none      not our business; touch nothing
  */
 
-import { checkEligibility, isBot } from './eligibility.mjs';
+import { checkEligibility, isBot, isFork } from './eligibility.mjs';
 import { MARKERS, hasMarker, isSubmitted } from './comment.mjs';
 
 const PR_ACTIONS = new Set(['opened', 'reopened', 'ready_for_review', 'synchronize']);
@@ -42,7 +42,9 @@ async function routePullRequest({ payload, inputs, lookups }) {
   // cannot edit our comment, so bail before spending any API calls.
   const preflight = checkEligibility({ inputs, pr, changedFiles: [{ filename: '', additions: 1, deletions: 0 }] });
   if (!preflight.eligible && preflight.reason !== 'no changed files') {
-    return { mode: 'skip', reason: preflight.reason, ...base };
+    // A fork's pull_request token is read-only, so writing a commit status will
+    // 403. Flag it so the skip handler can tolerate that instead of failing.
+    return { mode: 'skip', reason: preflight.reason, forkSkip: isFork(pr), ...base };
   }
 
   const changedFiles = await lookups.listChangedFiles(pr.number);

@@ -37,9 +37,12 @@ const READ_ONLY_BASH = [
   'tail *',
   'sed -n *',
   'wc *',
-  'cat *',
   'pwd',
 ];
+// Note: `cat` is deliberately absent. Combined with a checkout that persisted
+// credentials it would expose the token in .git/config. The checkout uses
+// persist-credentials: false, and opencode's native file reader plus
+// head/tail/sed cover legitimate reading, so this costs nothing.
 
 export function buildConfig({ model }) {
   const bash = { '*': 'deny' };
