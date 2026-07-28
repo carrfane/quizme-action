@@ -16,6 +16,13 @@ on:
         type: string
         required: false
         default: anthropic/claude-sonnet-4-5
+      small_model:
+        description: >-
+          Optional cheaper model for opencode's internal work. Defaults to `model`.
+          Must use the same provider, because only one API key is exported.
+        type: string
+        required: false
+        default: ''
       api_key_env:
         description: Override the env var the API key is exported as.
         type: string
@@ -115,6 +122,7 @@ jobs:
         with:
           api_key: ${{ secrets.api_key }}
           model: ${{ inputs.model }}
+          small_model: ${{ inputs.small_model }}
           api_key_env: ${{ inputs.api_key_env }}
           users: ${{ inputs.users }}
           question_count: ${{ inputs.question_count }}

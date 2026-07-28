@@ -21,7 +21,9 @@ jobs:
       statuses: write
     uses: ./.github/workflows/quizme.yml
     with:
-      model: anthropic/claude-sonnet-4-5
+      # Deliberately not the action's default (anthropic/claude-sonnet-4-5).
+      # Consequence: the default model path is not exercised by this repo's CI.
+      model: openai/gpt-5.5
       users: carrfane
       question_count: 3
       # This repo is mostly its own docs, so quiz on code changes only.
@@ -29,4 +31,4 @@ jobs:
         docs/**
         **/*.md
     secrets:
-      api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      api_key: ${{ secrets.OPENAI_API_KEY }}

@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { apiKeyEnvFor, readInputs, DEFAULTS } from '../scripts/lib/config.mjs';
+import {
+  apiKeyEnvFor,
+  readInputs,
+  assertModelsShareProvider,
+  DEFAULTS,
+} from '../scripts/lib/config.mjs';
 
 test('apiKeyEnvFor maps every known provider prefix', () => {
   const cases = {
@@ -13,11 +18,16 @@ test('apiKeyEnvFor maps every known provider prefix', () => {
     'xai/grok-4': 'XAI_API_KEY',
     'deepseek/deepseek-chat': 'DEEPSEEK_API_KEY',
     'mistral/mistral-large': 'MISTRAL_API_KEY',
-    'azure/gpt-4o': 'AZURE_API_KEY',
   };
   for (const [model, expected] of Object.entries(cases)) {
     assert.equal(apiKeyEnvFor(model), expected, model);
   }
+});
+
+test('azure is not claimed, since one key cannot express its endpoint', () => {
+  // Dropped deliberately rather than shipping an untested mapping.
+  assert.throws(() => apiKeyEnvFor('azure/gpt-4o'), /api_key_env/);
+  assert.equal(apiKeyEnvFor('azure/gpt-4o', 'AZURE_API_KEY'), 'AZURE_API_KEY');
 });
 
 test('apiKeyEnvFor is case insensitive on the provider', () => {
@@ -82,4 +92,42 @@ test('readInputs clamps question_count into a sane range', () => {
 
 test('readInputs ignore_paths accepts an explicit "none" to disable filtering', () => {
   assert.deepEqual(readInputs({ INPUT_IGNORE_PATHS: 'none' }).ignorePaths, []);
+});
+
+test('readInputs reads small_model and leaves it blank by default', () => {
+  assert.equal(readInputs({}).smallModel, '');
+  assert.equal(readInputs({ INPUT_SMALL_MODEL: '  ' }).smallModel, '');
+  assert.equal(readInputs({ INPUT_SMALL_MODEL: 'openai/gpt-5.4-mini' }).smallModel, 'openai/gpt-5.4-mini');
+});
+
+test('assertModelsShareProvider allows a blank or same-provider small model', () => {
+  assert.doesNotThrow(() => assertModelsShareProvider({ model: 'openai/gpt-5.5', smallModel: '' }));
+  assert.doesNotThrow(() =>
+    assertModelsShareProvider({ model: 'openai/gpt-5.5', smallModel: 'openai/gpt-5.4-mini' }),
+  );
+  assert.doesNotThrow(() =>
+    assertModelsShareProvider({ model: 'OpenAI/gpt-5.5', smallModel: 'openai/gpt-5.4-mini' }),
+  );
+});
+
+test('assertModelsShareProvider rejects a cross-provider small model', () => {
+  // Only one API key is exported, so this configuration can never authenticate.
+  assert.throws(
+    () => assertModelsShareProvider({ model: 'openai/gpt-5.5', smallModel: 'anthropic/claude-haiku-4' }),
+    /same provider/,
+  );
+});
+
+test('assertModelsShareProvider names both models so the fix is obvious', () => {
+  assert.throws(
+    () => assertModelsShareProvider({ model: 'openai/gpt-5.5', smallModel: 'groq/llama-3.3-70b' }),
+    /small_model "groq\/llama-3.3-70b".*model "openai\/gpt-5.5"/s,
+  );
+});
+
+test('assertModelsShareProvider rejects a malformed small model', () => {
+  assert.throws(
+    () => assertModelsShareProvider({ model: 'openai/gpt-5.5', smallModel: 'nonsense' }),
+    /provider\/model/,
+  );
 });

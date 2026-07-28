@@ -103,7 +103,11 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
     BASE_REF: decision.baseRef,
   });
 
-  const configFile = await (deps.writeConfig ?? writeConfig)({ dir: tmpdir, model: inputs.model });
+  const configFile = await (deps.writeConfig ?? writeConfig)({
+    dir: tmpdir,
+    model: inputs.model,
+    smallModel: inputs.smallModel,
+  });
 
   log(`quizme: asking ${inputs.model} for ${inputs.questionCount} questions (attempt ${attempt})`);
   const stdout = await (deps.runOpencode ?? runOpencode)({

@@ -7,6 +7,7 @@
 
 export const DEFAULTS = {
   model: 'anthropic/claude-sonnet-4-5',
+  smallModel: '',
   questionCount: 3,
   enabled: true,
   minChangedLines: 0,
@@ -32,8 +33,10 @@ const PROVIDER_ENV = {
   xai: 'XAI_API_KEY',
   deepseek: 'DEEPSEEK_API_KEY',
   mistral: 'MISTRAL_API_KEY',
-  azure: 'AZURE_API_KEY',
 };
+// Azure is deliberately absent: it needs a resource name or endpoint as well as
+// a key, which a single `api_key` secret cannot express. Azure users set
+// `api_key_env` explicitly rather than relying on an untested mapping.
 
 const QUESTION_COUNT_MIN = 1;
 const QUESTION_COUNT_MAX = 10;
@@ -72,6 +75,7 @@ export function apiKeyEnvFor(model, override) {
 export function readInputs(env = process.env) {
   return {
     model: str(env.INPUT_MODEL, DEFAULTS.model),
+    smallModel: str(env.INPUT_SMALL_MODEL, DEFAULTS.smallModel),
     users: list(env.INPUT_USERS).map((u) => u.replace(/^@/, '').toLowerCase()),
     questionCount: clampedInt(env.INPUT_QUESTION_COUNT, DEFAULTS.questionCount),
     enabled: bool(env.INPUT_ENABLED, DEFAULTS.enabled),
@@ -81,6 +85,33 @@ export function readInputs(env = process.env) {
     apiKeyEnv: blankToUndefined(env.INPUT_API_KEY_ENV) ?? '',
     statusContext: str(env.INPUT_STATUS_CONTEXT, DEFAULTS.statusContext),
   };
+}
+
+/**
+ * A small model from a different provider can never authenticate: exactly one
+ * provider key is exported. Fail fast with an explanation rather than let the
+ * run die on a confusing auth error mid-generation.
+ */
+export function assertModelsShareProvider({ model, smallModel }) {
+  if (!smallModel) return;
+
+  const primary = providerOf(model);
+  const secondary = providerOf(smallModel);
+  if (primary === secondary) return;
+
+  throw new Error(
+    `small_model "${smallModel}" uses provider "${secondary}" but model "${model}" uses ` +
+      `"${primary}". quizme exports a single API key, so both models must come from the ` +
+      'same provider. Either change small_model, or drop it to reuse the primary model.',
+  );
+}
+
+function providerOf(model) {
+  const raw = blankToUndefined(model);
+  if (!raw || !raw.includes('/')) {
+    throw new Error(`model must be in "provider/model" form, got ${JSON.stringify(model)}.`);
+  }
+  return raw.split('/', 1)[0].toLowerCase();
 }
 
 function blankToUndefined(value) {

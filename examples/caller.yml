@@ -25,7 +25,13 @@ jobs:
     uses: carrfane/quizme-action/.github/workflows/quizme.yml@v1
 
     with:
+      # The provider is taken from this prefix. Your `api_key` secret below is
+      # exported as the variable that provider expects (here ANTHROPIC_API_KEY).
       model: anthropic/claude-sonnet-4-5
+
+      # Optional cheaper model for opencode's internal work. Defaults to `model`.
+      # Must use the same provider, since only one API key is exported.
+      # small_model: anthropic/claude-haiku-4-5
 
       # Who the gate applies to. Omit to apply to every human contributor.
       # Bots are always skipped regardless.

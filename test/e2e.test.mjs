@@ -416,6 +416,55 @@ test('e2e: a bad model identifier fails fast on the first event', async (t) => {
   await assert.rejects(() => main(['--phase=resolve'], s.env), /provider\/model/);
 });
 
+test('e2e: a cross-provider small_model is rejected on the first event', async (t) => {
+  const s = await scenario({
+    eventName: 'pull_request',
+    payload: prPayload('opened'),
+    inputs: { INPUT_MODEL: 'openai/gpt-5.5', INPUT_SMALL_MODEL: 'anthropic/claude-haiku-4' },
+  });
+  t.after(s.cleanup);
+
+  await assert.rejects(() => main(['--phase=resolve'], s.env), /same provider/);
+  assert.equal(s.github.state.statuses.length, 0, 'nothing is written when the config is invalid');
+});
+
+test('e2e: a same-provider small_model reaches the opencode config', async (t) => {
+  const s = await scenario({
+    eventName: 'pull_request',
+    payload: prPayload('opened'),
+    inputs: { INPUT_MODEL: 'openai/gpt-5.5', INPUT_SMALL_MODEL: 'openai/gpt-5.4-mini' },
+  });
+  t.after(s.cleanup);
+
+  await main(['--phase=resolve'], s.env);
+  await withFakeOpencode(JSON.stringify({ type: 'text', text: JSON.stringify(QUIZ) }), () =>
+    main(['--phase=run'], s.env),
+  );
+
+  const config = JSON.parse(
+    await readFile(path.join(s.env.RUNNER_TEMP, 'quizme-opencode.json'), 'utf8'),
+  );
+  assert.equal(config.model, 'openai/gpt-5.5');
+  assert.equal(config.small_model, 'openai/gpt-5.4-mini');
+  assert.equal(config.permission.edit, 'deny', 'the sandbox survives the extra config');
+  assert.equal(s.github.state.statuses[0].state, 'pending');
+});
+
+test('e2e: small_model defaults to the primary model in the written config', async (t) => {
+  const s = await scenario({ eventName: 'pull_request', payload: prPayload('opened') });
+  t.after(s.cleanup);
+
+  await main(['--phase=resolve'], s.env);
+  await withFakeOpencode(JSON.stringify({ type: 'text', text: JSON.stringify(QUIZ) }), () =>
+    main(['--phase=run'], s.env),
+  );
+
+  const config = JSON.parse(
+    await readFile(path.join(s.env.RUNNER_TEMP, 'quizme-opencode.json'), 'utf8'),
+  );
+  assert.equal(config.small_model, config.model);
+});
+
 test('e2e: an unknown provider tells you about api_key_env', async (t) => {
   const s = await scenario({
     eventName: 'pull_request',

@@ -44,13 +44,17 @@ const READ_ONLY_BASH = [
 // persist-credentials: false, and opencode's native file reader plus
 // head/tail/sed cover legitimate reading, so this costs nothing.
 
-export function buildConfig({ model }) {
+export function buildConfig({ model, smallModel }) {
   const bash = { '*': 'deny' };
   for (const command of READ_ONLY_BASH) bash[command] = 'allow';
 
   return {
     $schema: 'https://opencode.ai/config.json',
     model,
+    // Pinned to the primary model unless overridden. Only one provider's key is
+    // ever exported, so letting opencode pick a cross-provider default would
+    // fail with no credentials.
+    small_model: smallModel || model,
     permission: {
       edit: 'deny',
       webfetch: 'deny',
@@ -59,9 +63,9 @@ export function buildConfig({ model }) {
   };
 }
 
-export async function writeConfig({ dir, model }) {
+export async function writeConfig({ dir, model, smallModel }) {
   const file = path.join(dir, 'quizme-opencode.json');
-  await writeFile(file, `${JSON.stringify(buildConfig({ model }), null, 2)}\n`, 'utf8');
+  await writeFile(file, `${JSON.stringify(buildConfig({ model, smallModel }), null, 2)}\n`, 'utf8');
   return file;
 }
 
@@ -112,6 +116,36 @@ function collectText(node, out, depth = 0) {
   for (const key of ['part', 'parts', 'message', 'properties', 'info', 'content', 'data']) {
     if (node[key] !== undefined) collectText(node[key], out, depth + 1);
   }
+}
+
+/**
+ * opencode reports failures as `{"type":"error"}` events on **stdout**, leaving
+ * stderr empty. Without this, a bad API key produced the useless message
+ * "opencode exited with code 1. stderr: <empty>".
+ */
+export function extractError(stdout) {
+  const messages = [];
+
+  for (const line of String(stdout ?? '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (event?.type !== 'error') continue;
+
+    const error = event.error ?? {};
+    const detail = error.data?.message ?? error.message ?? '';
+    const name = error.name ?? 'Error';
+    const ref = error.data?.ref ? ` (ref ${error.data.ref})` : '';
+    messages.push(detail ? `${name}: ${detail}${ref}` : `${name}${ref}`);
+  }
+
+  return messages.length > 0 ? messages.join('; ') : null;
 }
 
 /**
@@ -234,6 +268,23 @@ function nonEmpty(value) {
 }
 
 /**
+ * Best available explanation for a failed run, in order of usefulness:
+ * a structured error event, then stderr, then a tail of raw stdout.
+ */
+function describeFailure(stdout, stderr) {
+  const structured = extractError(stdout);
+  if (structured) return structured;
+
+  const trimmedStderr = String(stderr ?? '').trim();
+  if (trimmedStderr) return `stderr: ${trimmedStderr.slice(-1500)}`;
+
+  const trimmedStdout = String(stdout ?? '').trim();
+  if (trimmedStdout) return `stdout: ${trimmedStdout.slice(-1500)}`;
+
+  return 'No output on stdout or stderr.';
+}
+
+/**
  * Spawn the CLI. Rejects with stderr included so the failure comment is useful.
  */
 export function runOpencode({
@@ -285,11 +336,7 @@ export function runOpencode({
         resolve(stdout);
         return;
       }
-      reject(
-        new Error(
-          `opencode exited with code ${code}. stderr: ${stderr.slice(-1500) || '<empty>'}`,
-        ),
-      );
+      reject(new Error(`opencode exited with code ${code}. ${describeFailure(stdout, stderr)}`));
     });
   });
 }

@@ -97,6 +97,7 @@ answers and an explanation for each, and the `quizme` status turns green.
 | Input | Default | Description |
 | --- | --- | --- |
 | `model` | `anthropic/claude-sonnet-4-5` | `provider/model`, as opencode expects it |
+| `small_model` | same as `model` | Cheaper secondary model for opencode's internal work. Must use the same provider |
 | `users` | *(empty)* | Comma or newline separated logins the quiz applies to. Empty means every human contributor |
 | `question_count` | `3` | Questions per quiz, 1–10 |
 | `enabled` | `true` | Set `false` to switch quizme off without deleting the workflow |
@@ -113,8 +114,19 @@ answers and an explanation for each, and the `quizme` status turns green.
 
 ### Providers
 
-The env var for your key is derived from the `model` prefix, so you only ever
-pass one secret:
+**The provider comes from the `model` input, not from your environment.** quizme
+never guesses by looking at which keys happen to be set. The chain is:
+
+```
+model: openai/gpt-5.5          # you write this
+        └─ prefix "openai"     # quizme splits on the first "/"
+            └─ OPENAI_API_KEY  # your single `api_key` secret is exported as this
+                └─ opencode reads it
+```
+
+So you always pass exactly **one** secret, and quizme renames it to whatever the
+provider expects. Only that one key exists in the runner, which means opencode
+can never silently fall back to a different vendor.
 
 | Model prefix | Key exported as |
 | --- | --- |
@@ -126,9 +138,28 @@ pass one secret:
 | `xai/` | `XAI_API_KEY` |
 | `deepseek/` | `DEEPSEEK_API_KEY` |
 | `mistral/` | `MISTRAL_API_KEY` |
-| `azure/` | `AZURE_API_KEY` |
 
-For anything else, set `api_key_env` to the variable your provider needs.
+For anything else — including **Azure**, which needs a resource name or endpoint
+that a single secret cannot express — set `api_key_env` to the variable your
+provider expects:
+
+```yaml
+with:
+  model: acme/some-model
+  api_key_env: ACME_TOKEN
+secrets:
+  api_key: ${{ secrets.ACME_TOKEN }}
+```
+
+Two consequences worth knowing:
+
+- **A mismatch is not detected.** Setting `model: openai/...` while passing an
+  Anthropic key just fails with a provider auth error. quizme does not sniff key
+  formats to guess your intent.
+- **`small_model` must share the provider.** Because only one key is exported, a
+  secondary model from another provider could never authenticate. quizme rejects
+  that on the first event with an explicit message rather than dying halfway
+  through generation. Leave `small_model` unset and it simply reuses `model`.
 
 ### Commands
 
@@ -377,6 +408,11 @@ npm test      # 156 tests, no network, no Docker
 The action itself has **zero runtime dependencies** — plain ESM run by the
 runner's Node, GitHub API via built-in `fetch`. There is no build step and no
 committed `dist/`. CI enforces that nothing under `scripts/` imports a package.
+
+`self-quiz.yml` dogfoods the action on this repo's own pull requests using
+`openai/gpt-5.5`, which is deliberately **not** the shipped default
+(`anthropic/claude-sonnet-4-5`). Consequence: the default model path is not
+exercised by CI here.
 
 | Path | Responsibility |
 | --- | --- |

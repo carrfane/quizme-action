@@ -13,7 +13,7 @@ import { readFile, writeFile, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
-import { readInputs, apiKeyEnvFor } from './lib/config.mjs';
+import { readInputs, apiKeyEnvFor, assertModelsShareProvider } from './lib/config.mjs';
 import { createClient } from './lib/github.mjs';
 import { routeEvent } from './lib/router.mjs';
 import { runMode } from './lib/modes.mjs';
@@ -38,6 +38,7 @@ async function resolvePhase({ env, inputs, decisionPath }) {
   // Validate the credential contract early: a typo here should fail on the
   // first event, not silently at the model call.
   apiKeyEnvFor(inputs.model, inputs.apiKeyEnv);
+  assertModelsShareProvider(inputs);
 
   const payload = JSON.parse(await readFile(requireEnv(env, 'GITHUB_EVENT_PATH'), 'utf8'));
   const client = makeClient(env);

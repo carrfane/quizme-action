@@ -6,9 +6,20 @@ import {
   buildConfig,
   renderPrompt,
   extractQuiz,
+  extractError,
   validateQuiz,
   runOpencode,
 } from '../scripts/lib/opencode.mjs';
+
+/**
+ * Captured verbatim from a real `opencode run --format json` failure. opencode
+ * puts errors on stdout and leaves stderr empty, which is why the first live
+ * run reported only "stderr: <empty>".
+ */
+const REAL_ERROR_STDOUT =
+  '{"type":"error","timestamp":1785260715823,"sessionID":"ses_0562b53e4ffeyU2qePTMa3ocbh",' +
+  '"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.",' +
+  '"ref":"err_469c8f37"}}}';
 
 const question = (over = {}) => ({
   question: 'Why does `load()` return null now?',
@@ -36,6 +47,59 @@ test('buildConfig denies mutation and allows only read-only bash', () => {
       `${dangerous} must not be allowlisted`,
     );
   }
+});
+
+test('buildConfig pins small_model to the primary model by default', () => {
+  // Only one provider key is ever exported, so a cross-provider small model
+  // chosen by opencode would have no credentials.
+  const config = buildConfig({ model: 'openai/gpt-5.5' });
+  assert.equal(config.small_model, 'openai/gpt-5.5');
+});
+
+test('buildConfig honours an explicit small_model', () => {
+  const config = buildConfig({ model: 'openai/gpt-5.5', smallModel: 'openai/gpt-5.4-mini' });
+  assert.equal(config.model, 'openai/gpt-5.5');
+  assert.equal(config.small_model, 'openai/gpt-5.4-mini');
+});
+
+test('buildConfig treats a blank small_model as unset', () => {
+  assert.equal(buildConfig({ model: 'openai/gpt-5.5', smallModel: '' }).small_model, 'openai/gpt-5.5');
+});
+
+test('extractError reads the real failure payload opencode emits on stdout', () => {
+  const message = extractError(REAL_ERROR_STDOUT);
+  assert.match(message, /UnknownError/);
+  assert.match(message, /Unexpected server error/);
+  assert.match(message, /err_469c8f37/);
+});
+
+test('extractError ignores non-error events and malformed lines', () => {
+  const stdout = [
+    JSON.stringify({ type: 'session.start' }),
+    'not json at all',
+    '{"broken":',
+    JSON.stringify({ type: 'text', text: 'hello' }),
+  ].join('\n');
+  assert.equal(extractError(stdout), null);
+});
+
+test('extractError handles a top-level error message and a missing name', () => {
+  assert.match(extractError(JSON.stringify({ type: 'error', error: { message: 'bad key' } })), /bad key/);
+  assert.match(extractError(JSON.stringify({ type: 'error', error: {} })), /Error/);
+});
+
+test('extractError joins multiple error events', () => {
+  const stdout = [
+    JSON.stringify({ type: 'error', error: { name: 'A', data: { message: 'first' } } }),
+    JSON.stringify({ type: 'error', error: { name: 'B', data: { message: 'second' } } }),
+  ].join('\n');
+  assert.match(extractError(stdout), /first; B: second/);
+});
+
+test('extractError tolerates empty and nullish input', () => {
+  assert.equal(extractError(''), null);
+  assert.equal(extractError(undefined), null);
+  assert.equal(extractError(null), null);
 });
 
 test('renderPrompt substitutes placeholders and leaves unknown ones alone', () => {
@@ -189,6 +253,40 @@ test('runOpencode surfaces stderr on a non-zero exit', async () => {
   await assert.rejects(
     () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
     /exited with code 1.*invalid api key/s,
+  );
+});
+
+test('runOpencode prefers the structured stdout error over empty stderr', async () => {
+  // The regression: this used to report "stderr: <empty>" and tell you nothing.
+  const { impl } = fakeSpawn({ code: 1, stdout: REAL_ERROR_STDOUT, stderr: '' });
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    /Unexpected server error/,
+  );
+
+  const { impl: impl2 } = fakeSpawn({ code: 1, stdout: REAL_ERROR_STDOUT, stderr: '' });
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl2 }),
+    (error) => {
+      assert.ok(!/<empty>/.test(error.message), 'must not fall back to the useless empty message');
+      return true;
+    },
+  );
+});
+
+test('runOpencode falls back to a stdout tail when there is nothing structured', async () => {
+  const { impl } = fakeSpawn({ code: 1, stdout: 'something went sideways', stderr: '' });
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    /stdout: something went sideways/,
+  );
+});
+
+test('runOpencode says so plainly when there is no output at all', async () => {
+  const { impl } = fakeSpawn({ code: 1, stdout: '', stderr: '' });
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    /No output on stdout or stderr/,
   );
 });
 

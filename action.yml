@@ -16,6 +16,12 @@ inputs:
     description: Model to use, as `provider/model` (for example `openai/gpt-5.5`).
     required: false
     default: anthropic/claude-sonnet-4-5
+  small_model:
+    description: >-
+      Optional secondary model opencode uses for cheap internal work. Defaults to
+      `model`. Must use the same provider, because only one API key is exported.
+    required: false
+    default: ''
   api_key_env:
     description: >-
       Override the environment variable the API key is exported as. Required for
@@ -84,6 +90,7 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_SMALL_MODEL: ${{ inputs.small_model }}
         INPUT_API_KEY_ENV: ${{ inputs.api_key_env }}
         INPUT_USERS: ${{ inputs.users }}
         INPUT_QUESTION_COUNT: ${{ inputs.question_count }}
@@ -122,6 +129,7 @@ runs:
         QUIZME_WORKDIR: ${{ github.workspace }}/quizme-pr
         QUIZME_API_KEY: ${{ inputs.api_key }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_SMALL_MODEL: ${{ inputs.small_model }}
         INPUT_API_KEY_ENV: ${{ inputs.api_key_env }}
         INPUT_USERS: ${{ inputs.users }}
         INPUT_QUESTION_COUNT: ${{ inputs.question_count }}
