@@ -8,6 +8,9 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+
+import { publicError, forComment } from './errors.mjs';
 
 import {
   MARKERS,
@@ -23,9 +26,17 @@ import {
 } from './comment.mjs';
 import { gradeQuiz } from './grade.mjs';
 import { collectDiff } from './diff.mjs';
-import { renderPrompt, extractQuiz, validateQuiz, writeConfig, runOpencode } from './opencode.mjs';
+import {
+  renderPrompt,
+  extractQuiz,
+  validateQuiz,
+  prepareSandbox,
+  runOpencode,
+} from './opencode.mjs';
 
 const GENERATE_ATTEMPTS = 2;
+
+const GENERIC_FAILURE = 'Generation failed. The details are in the workflow log.';
 
 export async function runMode({ decision, inputs, client, deps = {}, log = console.log }) {
   const handlers = { generate, carry, grade, bypass, skip };
@@ -62,7 +73,10 @@ async function generate({ decision, inputs, client, deps, log }) {
       detail:
         `Merging is **not** blocked. quizme failed to build a quiz for \`${short(decision.headSha)}\`:\n\n` +
         '```\n' +
-        `${lastError?.message ?? 'unknown error'}\n` +
+        // Fail closed. An error that has not explicitly marked itself publishable
+        // contributes nothing here, because `message` can carry a filesystem
+        // path, a provider response, or raw model output. See errors.mjs.
+        `${lastError?.publicMessage ?? GENERIC_FAILURE}\n` +
         '```\n\n' +
         'Comment `/quizme` to try again.',
     });
@@ -94,7 +108,14 @@ async function generate({ decision, inputs, client, deps, log }) {
 
 async function generateQuiz({ decision, inputs, deps, log, attempt }) {
   const workdir = deps.workdir ?? process.cwd();
-  const tmpdir = deps.tmpdir ?? process.env.RUNNER_TEMP ?? workdir;
+  // Never fall back to `workdir`. The sandbox must not live inside the checkout:
+  // opencode traverses up to the nearest git directory, so a nested sandbox
+  // would still find the repository's own opencode.json and .opencode/plugins,
+  // silently undoing the isolation. os.tmpdir() is always outside both.
+  //
+  // `||`, not `??`: a set-but-empty RUNNER_TEMP would otherwise survive and make
+  // the sandbox path relative, which spawn resolves against the workspace.
+  const tmpdir = deps.tmpdir || process.env.RUNNER_TEMP || os.tmpdir();
 
   const diff = await (deps.collectDiff ?? collectDiff)({
     cwd: workdir,
@@ -104,8 +125,11 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
   });
 
   if (!diff.patch) {
-    throw new Error(
+    // The public variant omits `workdir`: a runner filesystem path helps nobody
+    // reading the pull request, and it is one more thing not to publish.
+    throw publicError(
       `Could not read a diff for ${diff.range} in ${workdir}. Nothing to build a quiz from.`,
+      `Could not read a diff for ${forComment(diff.range, 120)}. Nothing to build a quiz from.`,
     );
   }
   log(`quizme: diff range ${diff.range}, ${diff.patch.length} characters${diff.truncated ? ' (truncated)' : ''}`);
@@ -120,7 +144,10 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
     DIFF: diff.patch,
   });
 
-  const configFile = await (deps.writeConfig ?? writeConfig)({
+  // Note the cwd: the sandbox, never `workdir`. The diff is already in the
+  // prompt, so opencode gets no access to the code it is asking about — and
+  // therefore cannot be reconfigured by it. See prepareSandbox.
+  const { cwd, configFile, configContent } = await (deps.prepareSandbox ?? prepareSandbox)({
     dir: tmpdir,
     model: inputs.model,
     smallModel: inputs.smallModel,
@@ -130,13 +157,14 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
   const stdout = await (deps.runOpencode ?? runOpencode)({
     prompt,
     model: inputs.model,
-    cwd: workdir,
+    cwd,
     configFile,
+    configContent,
   });
 
   const raw = extractQuiz(stdout);
   if (!raw) {
-    throw new Error(describeMissingQuiz(stdout));
+    throw describeMissingQuiz(stdout);
   }
   return validateQuiz(raw, inputs.questionCount);
 }
@@ -322,6 +350,9 @@ async function upsert(client, prNumber, existing, body) {
  * A run that exits cleanly with no quiz has one common cause worth naming: the
  * model tried to call a tool. opencode then ends the session without executing
  * it and exits 0, which is silent and baffling otherwise.
+ *
+ * The raw output stays out of `publicMessage`: it is model output shaped by the
+ * pull request's own diff, and the failure notice is a public comment.
  */
 function describeMissingQuiz(stdout) {
   const text = String(stdout ?? '');
@@ -331,7 +362,11 @@ function describeMissingQuiz(stdout) {
       'self-contained. This usually means the prompt stopped telling the model that it has no tools.'
     : '';
 
-  return `Could not find a JSON quiz in the model output.${hint} Last 400 characters: ${text.slice(-400)}`;
+  const summary = `Could not find a JSON quiz in the model output.${hint}`;
+  return publicError(
+    `${summary} Last 400 characters: ${text.slice(-400)}`,
+    `${summary} The raw model output is in the workflow log.`,
+  );
 }
 
 function readPromptFile() {

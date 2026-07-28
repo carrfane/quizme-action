@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { runMode } from '../scripts/lib/modes.mjs';
 import { readInputs } from '../scripts/lib/config.mjs';
+import { publicError } from '../scripts/lib/errors.mjs';
 import {
   renderQuiz,
   renderResults,
@@ -63,7 +64,11 @@ function fakeClient(comments = []) {
 
 const okDeps = (over = {}) => ({
   readPrompt: async () => 'count={{QUESTION_COUNT}} range={{RANGE}} ref={{BASE_REF}} diff={{DIFF}}',
-  writeConfig: async () => '/tmp/cfg.json',
+  prepareSandbox: async () => ({
+    cwd: '/tmp/quizme-sandbox',
+    configFile: '/tmp/cfg.json',
+    configContent: '{}\n',
+  }),
   collectDiff: async () => ({
     range: 'cccc2222...aaaa1111bbbb',
     stat: ' src/a.js | 2 +-',
@@ -281,7 +286,13 @@ test('generate fails open when the model never cooperates', async () => {
     decision: decision(),
     inputs: inputs(),
     client,
-    deps: okDeps({ runOpencode: async () => { throw new Error('invalid api key'); } }),
+    // What the real runOpencode rejects with: a full message for the log, and an
+    // explicitly publishable one for the comment.
+    deps: okDeps({
+      runOpencode: async () => {
+        throw publicError('stderr: dump of everything', 'AuthError: invalid api key');
+      },
+    }),
     log: silent,
   });
 
@@ -293,7 +304,100 @@ test('generate fails open when the model never cooperates', async () => {
   assert.ok(hasMarker(body, MARKERS.notice));
   assert.ok(!hasMarker(body, MARKERS.quiz), 'a failure notice must never be gradeable');
   assert.ok(body.includes('invalid api key'), 'surfaces the real cause');
+  assert.ok(!body.includes('dump of everything'), 'but not the raw stream');
   assert.ok(body.includes('/quizme'), 'tells the author how to retry');
+});
+
+/**
+ * The invariant is fail-closed: an error that does not explicitly mark itself
+ * publishable has nothing of its message published. The previous
+ * `publicMessage ?? message` fallback failed open, so every new throw site was
+ * one oversight away from leaking.
+ */
+test('an error with no publicMessage publishes nothing from its message', async () => {
+  const client = fakeClient();
+  await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client,
+    deps: okDeps({
+      runOpencode: async () => {
+        throw new Error('/home/runner/work/app/app exploded: sk-live-abcdef1234567890');
+      },
+    }),
+    log: silent,
+  });
+
+  const body = client.calls.created[0].body;
+  assert.ok(!body.includes('sk-live-abcdef1234567890'), 'no secret-adjacent text');
+  assert.ok(!body.includes('/home/runner'), 'no runner filesystem paths');
+  assert.match(body, /workflow log/i, 'but the reader is told where to look');
+  assert.ok(body.includes('/quizme'), 'and how to retry');
+});
+
+test('a rejected model answer is not echoed into the comment', async () => {
+  // validateQuiz interpolates model output. A same-repo author can steer that
+  // output with their diff, and the notice is a public comment.
+  const client = fakeClient();
+  const malformed = {
+    questions: [
+      { ...quiz.questions[0], answer: 'INJECTED-PAYLOAD-9f2a' },
+      quiz.questions[1],
+      quiz.questions[2],
+    ],
+  };
+
+  await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client,
+    deps: okDeps({
+      runOpencode: async () =>
+        JSON.stringify({ type: 'text', text: JSON.stringify(malformed) }),
+    }),
+    log: silent,
+  });
+
+  const body = client.calls.created[0].body;
+  assert.ok(!body.includes('INJECTED-PAYLOAD-9f2a'), 'model output must not be published');
+});
+
+test('a generate failure publishes the safe message, never the raw stream', async () => {
+  const client = fakeClient();
+  const error = new Error('opencode exited with code 1. stdout: sk-live-abcdef1234567890 dump');
+  error.publicMessage = 'opencode exited with code 1. AI_APICallError: model overloaded';
+
+  await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client,
+    deps: okDeps({ runOpencode: async () => { throw error; } }),
+    log: silent,
+  });
+
+  const body = client.calls.created[0].body;
+  assert.ok(body.includes('AI_APICallError: model overloaded'), 'the real cause still surfaces');
+  assert.ok(!body.includes('sk-live-abcdef1234567890'), 'the raw stream must not be published');
+});
+
+test('a missing quiz does not publish raw model output', async () => {
+  // The model output is attacker-influenced on any pull request, so it belongs in
+  // the log, not in a comment.
+  const client = fakeClient();
+  await runMode({
+    decision: decision(),
+    inputs: inputs(),
+    client,
+    deps: okDeps({
+      runOpencode: async () =>
+        JSON.stringify({ type: 'text', text: 'no json here, and a secret sk-live-abcdef1234567890' }),
+    }),
+    log: silent,
+  });
+
+  const body = client.calls.created[0].body;
+  assert.ok(!body.includes('sk-live-abcdef1234567890'), 'raw model output must not be published');
+  assert.ok(body.includes('/quizme'), 'the author is still told how to retry');
 });
 
 test('generate fails open when the model returns a malformed quiz', async () => {

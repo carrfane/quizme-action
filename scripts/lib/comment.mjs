@@ -11,6 +11,8 @@
  * the workflow trigger filter again.
  */
 
+import { publicError } from './errors.mjs';
+
 export const MARKERS = {
   quiz: 'quizme:quiz',
   graded: 'quizme:graded',
@@ -106,7 +108,8 @@ export function renderQuiz({ sha, quiz, prompt }) {
 
   const body = lines.join('\n');
   if (body.length > BODY_BUDGET) {
-    throw new Error(
+    // Interpolates only lengths, so it is safe to show the author.
+    throw publicError(
       `Rendered quiz is too large for a GitHub comment (${body.length} of ${MAX_BODY} characters). ` +
         'Reduce question_count or ask the model for shorter options.',
     );

@@ -15,6 +15,7 @@ export function createClient({
   baseUrl = process.env.GITHUB_API_URL || 'https://api.github.com',
   fetchImpl = globalThis.fetch,
   sleep = defaultSleep,
+  secrets = [],
 } = {}) {
   if (!token) throw new Error('A GitHub token is required.');
   if (!repo || !repo.includes('/')) {
@@ -22,6 +23,7 @@ export function createClient({
   }
 
   const root = `${baseUrl.replace(/\/$/, '')}/repos/${repo}`;
+  const scrub = makeScrubber(secrets);
 
   async function request(method, url, body) {
     const absolute = url.startsWith('http') ? url : `${root}${url}`;
@@ -74,8 +76,9 @@ export function createClient({
     listChangedFiles: (number) => paginate(`/pulls/${number}/files`),
     listComments: (number) => paginate(`/issues/${number}/comments`),
     getComment: (id) => json('GET', `/issues/comments/${id}`),
-    createComment: (number, body) => json('POST', `/issues/${number}/comments`, { body }),
-    updateComment: (id, body) => json('PATCH', `/issues/comments/${id}`, { body }),
+    createComment: (number, body) =>
+      json('POST', `/issues/${number}/comments`, { body: scrub(body) }),
+    updateComment: (id, body) => json('PATCH', `/issues/comments/${id}`, { body: scrub(body) }),
 
     /**
      * The merge gate. `issue_comment` runs are not attached to the PR's check
@@ -87,7 +90,7 @@ export function createClient({
         return await json('POST', `/statuses/${sha}`, {
           state,
           context,
-          description: clampDescription(description),
+          description: clampDescription(scrub(description)),
           target_url: targetUrl,
         });
       } catch (error) {
@@ -103,6 +106,29 @@ export function createClient({
       }
     },
   };
+}
+
+/**
+ * Last line of defence for comment bodies.
+ *
+ * GitHub masks secrets in workflow logs, but nothing it writes through the REST
+ * API is covered — a comment body is published exactly as given. The generate
+ * failure path is the one that could carry provider output, so scrub here, at
+ * the single boundary where every comment passes through.
+ *
+ * Values shorter than this are ignored: an unset environment variable would
+ * otherwise redact every comment into asterisks.
+ */
+const MIN_SECRET_LENGTH = 8;
+
+function makeScrubber(secrets) {
+  const usable = (secrets ?? []).filter(
+    (secret) => typeof secret === 'string' && secret.length >= MIN_SECRET_LENGTH,
+  );
+  if (usable.length === 0) return (text) => text;
+
+  return (text) =>
+    usable.reduce((out, secret) => out.split(secret).join('***'), String(text ?? ''));
 }
 
 function shouldRetry(response) {

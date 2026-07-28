@@ -109,7 +109,24 @@ async function routeIssueComment({ payload, inputs, lookups }) {
     return none(`@${actor} is neither the PR author nor in the configured users list`);
   }
 
+  // `/quizme` is the only comment path that checks out code and calls a model, so
+  // it is the only one that needs gating. Deliberately *not* the full
+  // checkEligibility: an explicit request should override the draft, ignore_paths
+  // and min_changed_lines heuristics, which exist to avoid nagging rather than to
+  // protect anything. These two rules are different in kind.
   if (isForce) {
+    if (!inputs.enabled) {
+      return { mode: 'skip', reason: 'quizme is disabled for this repository', ...base };
+    }
+    // issue_comment runs in the base repo with secrets available, so checking out
+    // a fork's head sha would hand unreviewed code a runner holding the API key.
+    if (isFork(pr)) {
+      return {
+        mode: 'skip',
+        reason: 'pull request comes from a fork, whose head commit is unreviewed code',
+        ...base,
+      };
+    }
     return { mode: 'generate', reason: `/quizme requested by @${actor}`, ...base };
   }
 

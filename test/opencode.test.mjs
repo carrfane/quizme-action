@@ -252,6 +252,131 @@ test('runOpencode passes the expected CLI arguments and config env', async () =>
   assert.equal(calls[0].options.env.OPENCODE_CONFIG, '/tmp/cfg.json');
 });
 
+test('runOpencode also passes the config inline, which outranks a project config', async () => {
+  // OPENCODE_CONFIG is precedence 3; a repo's own opencode.json is 4 and would
+  // override it. OPENCODE_CONFIG_CONTENT is 6, above anything the checkout can
+  // supply, so the sandbox travels with the process rather than the filesystem.
+  const { calls, impl } = fakeSpawn({ stdout: 'ok' });
+  await runOpencode({
+    prompt: 'p',
+    model: 'openai/gpt-5.5',
+    cwd: '/tmp/empty',
+    configFile: '/tmp/cfg.json',
+    configContent: `${JSON.stringify(buildConfig({ model: 'openai/gpt-5.5' }))}\n`,
+    env: { PATH: '/usr/bin' },
+    spawnImpl: impl,
+  });
+
+  const inline = calls[0].options.env.OPENCODE_CONFIG_CONTENT;
+  assert.ok(inline, 'OPENCODE_CONFIG_CONTENT must be set');
+
+  const parsed = JSON.parse(inline);
+  assert.equal(parsed.tools['*'], false, 'the inline config must disable every tool');
+  assert.equal(parsed.permission.bash['*'], 'deny');
+});
+
+test('the opencode child receives no runner credential except the provider key', async () => {
+  // The whole sandbox design assumes opencode may be subverted. The OIDC token is
+  // the sharpest of these: it exchanges for cloud credentials, so it matters more
+  // than the repo token. Node's spawn omits undefined values entirely.
+  const { calls, impl } = fakeSpawn({ stdout: 'ok' });
+  await runOpencode({
+    prompt: 'p',
+    model: 'm',
+    cwd: '.',
+    configFile: 'c',
+    env: {
+      PATH: '/usr/bin',
+      GITHUB_TOKEN: 'ghs_secrettoken',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'oidc-secret',
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.test/oidc',
+      ACTIONS_RUNTIME_TOKEN: 'runtime-secret',
+      ANTHROPIC_API_KEY: 'sk-x',
+    },
+    spawnImpl: impl,
+  });
+
+  const childEnv = calls[0].options.env;
+  for (const name of [
+    'GITHUB_TOKEN',
+    'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    'ACTIONS_ID_TOKEN_REQUEST_URL',
+    'ACTIONS_RUNTIME_TOKEN',
+  ]) {
+    assert.equal(childEnv[name], undefined, `${name} must not reach the child`);
+  }
+  assert.equal(childEnv.ANTHROPIC_API_KEY, 'sk-x', 'but the provider key must survive');
+  assert.equal(childEnv.PATH, '/usr/bin', 'and the child must still be able to run');
+});
+
+test('a published provider error is bounded and cannot escape a code fence', async () => {
+  const detail = `${'x'.repeat(4000)}\n\`\`\`\n# injected heading`;
+  const stdout = JSON.stringify({ type: 'error', error: { name: 'AI_APICallError', data: { message: detail } } });
+  const { impl } = fakeSpawn({ code: 1, stdout });
+
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    (error) => {
+      assert.ok(error.publicMessage.length < 1000, 'must be capped');
+      assert.ok(!error.publicMessage.includes('```'), 'must not carry a fence');
+      assert.ok(!error.publicMessage.includes('\n'), 'must stay on one line');
+      return true;
+    },
+  );
+});
+
+/**
+ * A generate failure is published to a public pull request comment. GitHub's
+ * secret masking covers logs only, so raw stdout/stderr must never reach a
+ * comment: the log keeps the detail, the comment gets the structured cause.
+ */
+test('runOpencode keeps raw streams out of the comment-safe message', async () => {
+  const { impl } = fakeSpawn({
+    code: 1,
+    stdout: 'request dump including sk-live-abcdef1234567890 and more',
+    stderr: '',
+  });
+
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    (error) => {
+      assert.ok(error.message.includes('sk-live-abcdef1234567890'), 'the log keeps the detail');
+      assert.ok(error.publicMessage, 'a comment-safe message must exist');
+      assert.ok(
+        !error.publicMessage.includes('sk-live-abcdef1234567890'),
+        'the comment-safe message must not carry raw stdout',
+      );
+      return true;
+    },
+  );
+});
+
+test('runOpencode keeps raw stderr out of the comment-safe message', async () => {
+  const { impl } = fakeSpawn({ code: 1, stdout: '', stderr: 'Bearer sk-live-abcdef1234567890' });
+
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    (error) => {
+      assert.ok(error.message.includes('sk-live-abcdef1234567890'));
+      assert.ok(!error.publicMessage.includes('sk-live-abcdef1234567890'));
+      return true;
+    },
+  );
+});
+
+test('a structured opencode error is safe to publish verbatim', async () => {
+  // This is the useful case: the provider told us why, in a bounded field.
+  const { impl } = fakeSpawn({ code: 1, stdout: REAL_ERROR_STDOUT, stderr: '' });
+
+  await assert.rejects(
+    () => runOpencode({ prompt: 'p', model: 'm', cwd: '.', configFile: 'c', spawnImpl: impl }),
+    (error) => {
+      assert.match(error.publicMessage, /Unexpected server error/);
+      return true;
+    },
+  );
+});
+
 test('runOpencode surfaces stderr on a non-zero exit', async () => {
   const { impl } = fakeSpawn({ code: 1, stderr: 'invalid api key' });
   await assert.rejects(

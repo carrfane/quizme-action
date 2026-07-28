@@ -38,6 +38,79 @@ test('constructor validates its arguments', () => {
   assert.throws(() => createClient({ token: 't', repo: 'nope' }), /owner\/name/);
 });
 
+/**
+ * GitHub masks secrets in *logs*. It does not mask anything written through the
+ * REST API, so a comment body is not covered by that safety net. Redacting at
+ * the write boundary is the one place it cannot be forgotten.
+ */
+test('createComment redacts known secrets from the body', async () => {
+  const { calls, fetchImpl } = recorder(() => res({ id: 1 }));
+  const withSecret = createClient({
+    token: 'tok',
+    repo: 'carrfane/app',
+    fetchImpl,
+    sleep: async () => {},
+    secrets: ['sk-live-abcdef1234567890'],
+  });
+
+  await withSecret.createComment(7, 'boom: sk-live-abcdef1234567890 was rejected');
+
+  assert.equal(calls[0].body.body, 'boom: *** was rejected');
+  assert.ok(!JSON.stringify(calls[0].body).includes('sk-live'), 'no fragment may survive');
+});
+
+test('updateComment redacts known secrets from the body', async () => {
+  const { calls, fetchImpl } = recorder(() => res({ id: 1 }));
+  const withSecret = createClient({
+    token: 'tok',
+    repo: 'carrfane/app',
+    fetchImpl,
+    sleep: async () => {},
+    secrets: ['sk-live-abcdef1234567890'],
+  });
+
+  await withSecret.updateComment(9, 'key sk-live-abcdef1234567890 here');
+
+  assert.equal(calls[0].body.body, 'key *** here');
+});
+
+test('setStatus descriptions are redacted too', async () => {
+  // setStatus is the other public write. The scrubber is only "the single
+  // boundary every write passes through" if it covers this one as well.
+  const { calls, fetchImpl } = recorder(() => res({}));
+  const withSecret = createClient({
+    token: 'tok',
+    repo: 'carrfane/app',
+    fetchImpl,
+    sleep: async () => {},
+    secrets: ['sk-live-abcdef1234567890'],
+  });
+
+  await withSecret.setStatus({
+    sha: 'deadbeef',
+    state: 'success',
+    context: 'quizme',
+    description: 'failed: sk-live-abcdef1234567890',
+  });
+
+  assert.equal(calls[0].body.description, 'failed: ***');
+});
+
+test('redaction ignores blank and implausibly short secrets', async () => {
+  // An unset env var must not turn every comment into a wall of asterisks.
+  const { calls, fetchImpl } = recorder(() => res({ id: 1 }));
+  const withSecret = createClient({
+    token: 'tok',
+    repo: 'carrfane/app',
+    fetchImpl,
+    sleep: async () => {},
+    secrets: ['', undefined, 'a'],
+  });
+
+  await withSecret.createComment(7, 'a normal comment about a variable');
+  assert.equal(calls[0].body.body, 'a normal comment about a variable');
+});
+
 test('setStatus posts to the head sha with auth and the right body', async () => {
   const { calls, fetchImpl } = recorder(() => res({}));
   await client(fetchImpl).setStatus({

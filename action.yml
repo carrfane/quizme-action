@@ -127,7 +127,9 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
         QUIZME_WORKDIR: ${{ github.workspace }}/quizme-pr
-        QUIZME_API_KEY: ${{ inputs.api_key }}
+        # Only generate calls a model. grade, carry, bypass and skip have no use
+        # for the credential, so they never receive it.
+        QUIZME_API_KEY: ${{ steps.resolve.outputs.mode == 'generate' && inputs.api_key || '' }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_SMALL_MODEL: ${{ inputs.small_model }}
         INPUT_API_KEY_ENV: ${{ inputs.api_key_env }}

@@ -48,7 +48,17 @@ const QUESTION_COUNT_MAX = 10;
  */
 export function apiKeyEnvFor(model, override) {
   const explicit = blankToUndefined(override);
-  if (explicit) return explicit;
+  if (explicit) {
+    // action.yml does `export "${key_env}=..."`. A malformed name would create a
+    // variable no provider reads, and the run would die later at the model call
+    // with a misleading credentials error. Reject it while the message is clear.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(explicit)) {
+      throw new Error(
+        `api_key_env must be a valid environment variable name, got ${JSON.stringify(override)}.`,
+      );
+    }
+    return explicit;
+  }
 
   const raw = blankToUndefined(model);
   if (!raw || !raw.includes('/')) {

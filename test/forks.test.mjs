@@ -23,6 +23,15 @@ const forkPr = {
   html_url: 'https://github.test/pr/3',
 };
 
+const sameRepoPr = {
+  number: 4,
+  draft: false,
+  user: { login: 'carrfane', type: 'User' },
+  head: { sha: 'ownsha1', repo: { full_name: 'carrfane/app' } },
+  base: { sha: 'basesha1', ref: 'main', repo: { full_name: 'carrfane/app' } },
+  html_url: 'https://github.test/pr/4',
+};
+
 const forbidden = () => {
   const error = new Error('POST https://api.github.com/repos/x/y/statuses/z failed with 403 Forbidden: nope');
   return error;
@@ -107,6 +116,114 @@ test('a non-403 failure on a fork skip still fails loudly', async () => {
       }),
     /500/,
   );
+});
+
+/**
+ * `issue_comment` runs in the base repository with secrets available, and the
+ * generate path checks out the head sha. On a fork that head sha is code nobody
+ * has reviewed, so `/quizme` must not reach generate — routePullRequest already
+ * refuses forks, and the comment path has to agree.
+ */
+test('/quizme on a fork pull request never reaches generate', async () => {
+  const decision = await routeEvent({
+    payload: {
+      action: 'created',
+      issue: { number: 3, pull_request: { url: 'x' } },
+      comment: { id: 1, body: '/quizme', user: { login: 'outsider', type: 'User' } },
+      sender: { login: 'outsider', type: 'User' },
+    },
+    eventName: 'issue_comment',
+    inputs: inputs(),
+    lookups: {
+      listChangedFiles: async () => [{ filename: 'src/a.js', additions: 9, deletions: 1 }],
+      listComments: async () => [],
+      getPullRequest: async () => forkPr,
+    },
+  });
+
+  assert.notEqual(decision.mode, 'generate', 'a fork must never be checked out and analysed');
+  assert.equal(decision.mode, 'skip');
+  assert.match(decision.reason, /fork/);
+  // issue_comment holds a writable token, so a 403 here is a real fault, not the
+  // expected read-only fork case. Do not flag it as tolerable.
+  assert.notEqual(decision.forkSkip, true);
+});
+
+test('/quizme respects the enabled kill switch', async () => {
+  const decision = await routeEvent({
+    payload: {
+      action: 'created',
+      issue: { number: 4, pull_request: { url: 'x' } },
+      comment: { id: 1, body: '/quizme', user: { login: 'carrfane', type: 'User' } },
+      sender: { login: 'carrfane', type: 'User' },
+    },
+    eventName: 'issue_comment',
+    inputs: { ...inputs(), enabled: false },
+    lookups: {
+      listChangedFiles: async () => [],
+      listComments: async () => [],
+      getPullRequest: async () => sameRepoPr,
+    },
+  });
+
+  assert.notEqual(decision.mode, 'generate', 'a disabled repository must not generate');
+  assert.match(decision.reason, /disabled/);
+});
+
+test('/quizme still generates on a same-repo pull request', async () => {
+  // The guard must not swallow the normal case.
+  const decision = await routeEvent({
+    payload: {
+      action: 'created',
+      issue: { number: 4, pull_request: { url: 'x' } },
+      comment: { id: 1, body: '/quizme', user: { login: 'carrfane', type: 'User' } },
+      sender: { login: 'carrfane', type: 'User' },
+    },
+    eventName: 'issue_comment',
+    inputs: inputs(),
+    lookups: {
+      listChangedFiles: async () => [],
+      listComments: async () => [],
+      getPullRequest: async () => sameRepoPr,
+    },
+  });
+
+  assert.equal(decision.mode, 'generate');
+  assert.equal(decision.headSha, 'ownsha1');
+});
+
+test('grading a fork pull request still works', async () => {
+  // Grading writes no code and reads no checkout, so the fork guard must not
+  // strand an author who already has a quiz in front of them.
+  const body = [
+    '<!-- quizme:quiz v=1 sha=forksha1 -->',
+    '**1.** Q1?',
+    '- [x] A. a',
+    '- [ ] B. b',
+    '- [ ] C. c',
+    '- [ ] D. d',
+    '',
+    '- [x] **Submit answers**',
+  ].join('\n');
+
+  const decision = await routeEvent({
+    payload: {
+      action: 'edited',
+      issue: { number: 3, pull_request: { url: 'x' } },
+      comment: { id: 77, body, user: { login: 'outsider', type: 'User' } },
+      sender: { login: 'outsider', type: 'User' },
+    },
+    eventName: 'issue_comment',
+    inputs: inputs(),
+    lookups: {
+      listChangedFiles: async () => [],
+      listComments: async () => [],
+      getPullRequest: async () => forkPr,
+    },
+  });
+
+  assert.equal(decision.mode, 'grade');
+  assert.equal(decision.commentId, 77);
 });
 
 test('a maintainer can still bypass a fork PR from a comment, where the token can write', async () => {

@@ -6,8 +6,10 @@
  */
 
 import { spawn } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+
+import { publicError, forComment } from './errors.mjs';
 
 /**
  * Every tool opencode ships, all switched off.
@@ -61,10 +63,30 @@ export function buildConfig({ model, smallModel }) {
   };
 }
 
-export async function writeConfig({ dir, model, smallModel }) {
-  const file = path.join(dir, 'quizme-opencode.json');
-  await writeFile(file, `${JSON.stringify(buildConfig({ model, smallModel }), null, 2)}\n`, 'utf8');
-  return file;
+/**
+ * Everything opencode needs to run *outside* the code under review.
+ *
+ * Returns an empty `cwd` plus the sandbox config in both forms. Two reasons the
+ * cwd matters more than the config does:
+ *
+ *   - opencode merges config by precedence, and a project `opencode.json` (4) or
+ *     an `.opencode/` directory (5) beats `OPENCODE_CONFIG` (3). A pull request
+ *     could therefore re-enable bash and undo everything `buildConfig` sets.
+ *   - `.opencode/plugins/*.js` is not config at all: it is code opencode loads
+ *     and executes, which needs no model cooperation to read the API key.
+ *
+ * Both are discovered relative to the cwd, so an empty cwd removes the class.
+ * `OPENCODE_CONFIG_CONTENT` (precedence 6) is the belt to that braces.
+ */
+export async function prepareSandbox({ dir, model, smallModel }) {
+  const cwd = path.join(dir, 'quizme-sandbox');
+  await mkdir(cwd, { recursive: true });
+
+  const configContent = `${JSON.stringify(buildConfig({ model, smallModel }), null, 2)}\n`;
+  const configFile = path.join(dir, 'quizme-opencode.json');
+  await writeFile(configFile, configContent, 'utf8');
+
+  return { cwd, configFile, configContent };
 }
 
 export function renderPrompt(template, values) {
@@ -212,41 +234,49 @@ function firstJsonObject(text) {
 const LETTERS = ['A', 'B', 'C', 'D'];
 
 export function validateQuiz(quiz, expectedCount) {
+  // These messages interpolate only integers and a question index, so they are
+  // safe to publish and tell the author the model misbehaved. The one exception
+  // is the answer check below, which echoes model output.
   if (!quiz || typeof quiz !== 'object' || Array.isArray(quiz)) {
-    throw new Error('Model output is not a JSON object.');
+    throw publicError('Model output is not a JSON object.');
   }
   if (!Array.isArray(quiz.questions)) {
-    throw new Error('Model output has no "questions" array.');
+    throw publicError('Model output has no "questions" array.');
   }
   if (quiz.questions.length !== expectedCount) {
-    throw new Error(
+    throw publicError(
       `Model returned ${quiz.questions.length} questions, expected ${expectedCount}.`,
     );
   }
 
   quiz.questions.forEach((question, i) => {
     const at = `question ${i + 1}`;
-    if (!nonEmpty(question?.question)) throw new Error(`${at} has an empty "question".`);
+    if (!nonEmpty(question?.question)) throw publicError(`${at} has an empty "question".`);
     if (!question.options || typeof question.options !== 'object') {
-      throw new Error(`${at} has no "options" object.`);
+      throw publicError(`${at} has no "options" object.`);
     }
     for (const letter of LETTERS) {
       if (!nonEmpty(question.options[letter])) {
-        throw new Error(`${at} is missing option ${letter}.`);
+        throw publicError(`${at} is missing option ${letter}.`);
       }
     }
     if (Object.keys(question.options).length !== LETTERS.length) {
-      throw new Error(`${at} must have exactly options A-D.`);
+      throw publicError(`${at} must have exactly options A-D.`);
     }
     if (!LETTERS.includes(question.answer)) {
-      throw new Error(`${at} has answer ${JSON.stringify(question.answer)}, expected one of A-D.`);
+      // `question.answer` is model output, and a pull request author can steer
+      // the model with their diff. Keep it in the log only.
+      throw publicError(
+        `${at} has answer ${JSON.stringify(question.answer)}, expected one of A-D.`,
+        `${at} has an invalid answer. The raw model output is in the workflow log.`,
+      );
     }
-    if (!nonEmpty(question.explanation)) throw new Error(`${at} has an empty "explanation".`);
+    if (!nonEmpty(question.explanation)) throw publicError(`${at} has an empty "explanation".`);
   });
 
   const unique = new Set(quiz.questions.map((q) => q.question.trim().toLowerCase()));
   if (unique.size !== quiz.questions.length) {
-    throw new Error('Model returned duplicate questions.');
+    throw publicError('Model returned duplicate questions.');
   }
 
   return {
@@ -266,21 +296,46 @@ function nonEmpty(value) {
 }
 
 /**
- * Best available explanation for a failed run, in order of usefulness:
- * a structured error event, then stderr, then a tail of raw stdout.
+ * Two descriptions of one failure, because they go to two places.
+ *
+ * `log` keeps the raw stdout/stderr tail, which is usually where the diagnosis
+ * is. `publish` carries only the structured error event, because a generate
+ * failure is posted to a public pull request comment — and GitHub's secret
+ * masking applies to logs, not to bodies written through the REST API. Anything
+ * a provider happened to echo would otherwise be published verbatim.
  */
 function describeFailure(stdout, stderr) {
   const structured = extractError(stdout);
-  if (structured) return structured;
-
   const trimmedStderr = String(stderr ?? '').trim();
-  if (trimmedStderr) return `stderr: ${trimmedStderr.slice(-1500)}`;
-
   const trimmedStdout = String(stdout ?? '').trim();
-  if (trimmedStdout) return `stdout: ${trimmedStdout.slice(-1500)}`;
 
-  return 'No output on stdout or stderr.';
+  let log;
+  if (structured) log = structured;
+  else if (trimmedStderr) log = `stderr: ${trimmedStderr.slice(-1500)}`;
+  else if (trimmedStdout) log = `stdout: ${trimmedStdout.slice(-1500)}`;
+  else log = 'No output on stdout or stderr.';
+
+  // The structured detail is provider-authored: unbounded, and free to contain a
+  // newline followed by a code fence. Flatten and cap it before it is rendered
+  // inside a fenced block.
+  let publish;
+  if (structured) publish = forComment(structured);
+  else if (!trimmedStderr && !trimmedStdout) publish = 'No output on stdout or stderr.';
+  else publish = 'No structured error was reported; the raw output is in the workflow log.';
+
+  return { log, publish };
 }
+
+/**
+ * Runner credentials opencode has no use for. Spreading `undefined` over the
+ * inherited environment removes them, because Node drops undefined env values.
+ */
+const WITHHELD_FROM_CHILD = Object.freeze({
+  GITHUB_TOKEN: undefined,
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: undefined,
+  ACTIONS_ID_TOKEN_REQUEST_URL: undefined,
+  ACTIONS_RUNTIME_TOKEN: undefined,
+});
 
 /**
  * Spawn the CLI. Rejects with stderr included so the failure comment is useful.
@@ -290,6 +345,7 @@ export function runOpencode({
   model,
   cwd,
   configFile,
+  configContent,
   env = process.env,
   // The prompt is self-contained, so there is no exploration loop to wait for.
   timeoutMs = 5 * 60 * 1000,
@@ -301,7 +357,18 @@ export function runOpencode({
       ['run', '--format', 'json', '--model', model, '--agent', 'plan', prompt],
       {
         cwd,
-        env: { ...env, OPENCODE_CONFIG: configFile, CI: 'true' },
+        env: {
+          ...env,
+          OPENCODE_CONFIG: configFile,
+          // Precedence 6: outranks any config the checked-out repository ships.
+          ...(configContent ? { OPENCODE_CONFIG_CONTENT: configContent } : {}),
+          CI: 'true',
+          // The sandbox exists because opencode might be subverted, so it gets no
+          // runner credential beyond the provider key it actually needs. The OIDC
+          // pair matters most: it exchanges for cloud credentials, which is worse
+          // than the repo token. Node's spawn omits undefined values entirely.
+          ...WITHHELD_FROM_CHILD,
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -313,7 +380,7 @@ export function runOpencode({
     const timer = setTimeout(() => {
       settled = true;
       child.kill('SIGKILL');
-      reject(new Error(`opencode timed out after ${Math.round(timeoutMs / 1000)}s.`));
+      reject(publicError(`opencode timed out after ${Math.round(timeoutMs / 1000)}s.`));
     }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
@@ -325,7 +392,7 @@ export function runOpencode({
 
     child.on('error', (error) => {
       clearTimeout(timer);
-      if (!settled) reject(new Error(`Could not start opencode: ${error.message}`));
+      if (!settled) reject(publicError(`Could not start opencode: ${error.message}`));
     });
 
     child.on('close', (code) => {
@@ -335,7 +402,11 @@ export function runOpencode({
         resolve(stdout);
         return;
       }
-      reject(new Error(`opencode exited with code ${code}. ${describeFailure(stdout, stderr)}`));
+      const failure = describeFailure(stdout, stderr);
+      const error = new Error(`opencode exited with code ${code}. ${failure.log}`);
+      // Read by the generate handler when it builds the public failure comment.
+      error.publicMessage = `opencode exited with code ${code}. ${failure.publish}`;
+      reject(error);
     });
   });
 }

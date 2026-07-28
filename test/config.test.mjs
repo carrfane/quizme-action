@@ -30,6 +30,27 @@ test('azure is not claimed, since one key cannot express its endpoint', () => {
   assert.equal(apiKeyEnvFor('azure/gpt-4o', 'AZURE_API_KEY'), 'AZURE_API_KEY');
 });
 
+test('an api_key_env override must be a usable environment variable name', () => {
+  // action.yml does `export "${key_env}=${QUIZME_API_KEY}"`. A malformed name
+  // silently produces a variable nothing reads, and the run fails later at the
+  // model call with a confusing credentials error. Fail here instead.
+  // Blank is not malformed: it means "not provided", and falls back to the
+  // provider mapping.
+  for (const bad of ['ACME TOKEN', 'ACME=TOKEN', '1UP', 'acme-token', 'A$B']) {
+    assert.throws(
+      () => apiKeyEnvFor('acme/model', bad),
+      /environment variable name/,
+      JSON.stringify(bad),
+    );
+  }
+});
+
+test('apiKeyEnvFor accepts conventional env var names', () => {
+  for (const good of ['ACME_TOKEN', '_PRIVATE', 'A1', 'ANTHROPIC_API_KEY']) {
+    assert.equal(apiKeyEnvFor('acme/model', good), good);
+  }
+});
+
 test('apiKeyEnvFor is case insensitive on the provider', () => {
   assert.equal(apiKeyEnvFor('OpenAI/gpt-5.5'), 'OPENAI_API_KEY');
 });

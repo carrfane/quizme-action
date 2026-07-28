@@ -73,10 +73,14 @@ async function runPhase({ env, inputs, decisionPath }) {
     return { action: 'none' };
   }
 
+  // Hand the client the live API key so it can scrub it from any comment body.
+  // Belt to the braces in describeFailure: masking does not cover the REST API.
+  const keyEnv = apiKeyEnvFor(inputs.model, inputs.apiKeyEnv);
+
   return runMode({
     decision,
     inputs,
-    client: makeClient(env),
+    client: makeClient(env, { secrets: [env[keyEnv], env.GITHUB_TOKEN] }),
     deps: {
       workdir: env.QUIZME_WORKDIR || process.cwd(),
       tmpdir: env.RUNNER_TEMP,
@@ -84,11 +88,12 @@ async function runPhase({ env, inputs, decisionPath }) {
   });
 }
 
-function makeClient(env) {
+function makeClient(env, { secrets = [] } = {}) {
   return createClient({
     token: requireEnv(env, 'GITHUB_TOKEN'),
     repo: requireEnv(env, 'GITHUB_REPOSITORY'),
     baseUrl: env.GITHUB_API_URL || 'https://api.github.com',
+    secrets,
   });
 }
 

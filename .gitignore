@@ -1,5 +1,9 @@
 node_modules/
 .quizme/
 quizme-pr/
+# Sandbox artefacts. These belong in RUNNER_TEMP; a stray one here means a test
+# resolved its temp directory relative to the repository root.
+quizme-sandbox/
+quizme-opencode.json
 *.log
 .DS_Store

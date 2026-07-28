@@ -397,16 +397,56 @@ Stated plainly, because they are design decisions rather than bugs:
   editing the bot's comment, which needs write access. Worse, a fork's
   `pull_request` token is read-only, so quizme cannot even write the green
   status — it logs a warning and exits cleanly rather than painting a red X on a
-  contributor's PR. **Consequence:** if you make `quizme` a *required* check on a
-  public repository, fork PRs will sit with the check unreported. A maintainer
-  can comment `/quizme skip` to unblock them, because `issue_comment` runs do
-  have a writable token. If you take many fork contributions, consider leaving
-  `quizme` optional.
+  contributor's PR. `/quizme` is refused on a fork too, for a second and stronger
+  reason: see [Security](#security). **Consequence:** if you make `quizme` a
+  *required* check on a public repository, fork PRs will sit with the check
+  unreported. A maintainer can comment `/quizme skip` to unblock them, because
+  `issue_comment` runs do have a writable token. If you take many fork
+  contributions, consider leaving `quizme` optional.
 - **Bots are always skipped**, even if you list them in `users`, so automated
   PRs never wedge on a quiz nobody will answer.
 - **One model call per quiz** costs whatever your provider charges for reading a
   diff and writing three questions. Cheap, but not free. `ignore_paths` and
   `min_changed_lines` keep it off trivial changes.
+
+## Security
+
+quizme holds a model provider API key and reads your diff. Three properties keep
+those two facts apart.
+
+**The model gets no tools and no filesystem.** The whole diff is embedded in the
+prompt, so opencode is run with every tool disabled and — more importantly — with
+its working directory set to an *empty* temporary directory, never the checkout.
+That matters because opencode merges configuration by precedence, and a
+`opencode.json` committed to a repository outranks the one quizme supplies. A
+`.opencode/plugins/` directory is worse still: it is code opencode loads and
+executes. Both are discovered relative to the working directory, so an empty
+working directory removes the whole class rather than trying to out-configure it.
+`test/sandbox.test.mjs` pins this.
+
+**Unreviewed code is never checked out.** `issue_comment` events run in the base
+repository with secrets available, so `/quizme` on a fork pull request is refused
+outright. Only `pull_request` events from the same repository reach the generate
+path.
+
+**The key is exported only for a generate, and never published.** grade, carry,
+bypass and skip never receive it. The action shell never echoes it and never
+enables tracing. GitHub masks secrets in workflow logs, but *not* in anything
+written through the REST API, so failure comments carry only the structured
+provider error — raw stdout and stderr stay in the log — and every comment body
+passes through a redaction step on the way out.
+
+What this does **not** protect against, stated plainly:
+
+- **`/quizme skip` is not authorised.** Any non-bot commenter — on a public
+  repository, any GitHub user — can flip the status to green. That is the same
+  posture as the answer key: quizme is a speed bump for people who want one, not
+  a gate that survives someone who does not. Do not treat a green `quizme` status
+  as evidence of anything.
+- **Anyone who can push a branch to your repository can already read your
+  secrets** by editing a workflow. quizme does not widen that, and cannot narrow
+  it.
+- **The answer key is readable.** See Limitations above.
 
 ### Why not `act`?
 
