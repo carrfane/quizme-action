@@ -32,6 +32,22 @@ const BODY_BUDGET = 60000;
 
 const FOOTER = '<sub>Posted by [quizme](https://github.com/carrfane/quizme-action).</sub>';
 
+/**
+ * Sets expectations for the wait after ticking Submit.
+ *
+ * Ticking a checkbox edits the comment, which triggers a workflow run, so there
+ * is an unavoidable gap before the answers appear — measured at roughly twelve
+ * seconds, of which about seven is GitHub queueing and provisioning a runner.
+ * Nothing visibly happens during it, which invites double-ticking.
+ *
+ * "Usually" is deliberate: runner queues can be far slower on a busy org.
+ *
+ * Must never contain the literal `[x] **Submit answers**`, or the workflow's
+ * trigger filter would match a body we wrote ourselves.
+ */
+const GRADING_NOTE =
+  '_Grading runs as a GitHub Actions job — results usually appear within 30 seconds._';
+
 export function encodeKey(payload) {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
 }
@@ -80,6 +96,8 @@ export function renderQuiz({ sha, quiz, prompt }) {
     '---',
     '',
     SUBMIT_UNCHECKED,
+    '',
+    GRADING_NOTE,
     '',
     FOOTER,
     '',

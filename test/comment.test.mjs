@@ -85,6 +85,48 @@ test('renderQuiz produces the documented structure', () => {
   }
 });
 
+test('renderQuiz sets expectations about the grading delay', () => {
+  // Ticking Submit costs roughly twelve seconds with no visible feedback, so the
+  // comment says so rather than looking broken.
+  const body = renderQuiz({ sha: SHA, quiz });
+  assert.match(body, /results usually appear within 30 seconds/i);
+});
+
+test('the grading note cannot trip the workflow trigger filter', () => {
+  const body = renderQuiz({ sha: SHA, quiz });
+  const noteLine = body.split('\n').find((line) => /results usually appear/i.test(line));
+  assert.ok(noteLine, 'the note is on its own line');
+  assert.ok(!noteLine.includes('[x]'), 'the note must not contain a ticked box');
+  assert.ok(!noteLine.includes('Submit answers'), 'the note must not repeat the submit label');
+});
+
+test('the grading note is not mistaken for an answer option', () => {
+  // It lands inside the final question block for splitQuestionBlocks, so it must
+  // not look like "- [ ] A. ..." or it would corrupt parsing.
+  const body = renderQuiz({ sha: SHA, quiz });
+  const selections = parseSelections(body);
+  assert.deepEqual(Object.keys(selections), ['1', '2']);
+  assert.deepEqual(Object.values(selections), [null, null], 'nothing is ticked yet');
+});
+
+test('the grading note is absent from the results, where it would be nonsense', () => {
+  const body = renderResults({
+    sha: SHA,
+    quiz,
+    selections: { 1: 'B', 2: 'C' },
+    result: {
+      correct: 2,
+      total: 2,
+      outcomes: [
+        { index: 1, selected: 'B', expected: 'B', correct: true },
+        { index: 2, selected: 'C', expected: 'C', correct: true },
+      ],
+    },
+    actor: 'carrfane',
+  });
+  assert.ok(!/results usually appear/i.test(body));
+});
+
 test('renderQuiz never leaks the answer letter in plain text', () => {
   const body = renderQuiz({ sha: SHA, quiz });
   const visible = body.replace(/<!--[\s\S]*?-->/g, '');

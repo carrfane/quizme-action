@@ -85,10 +85,25 @@ quizme posts one comment:
 > ---
 >
 > - [ ] **Submit answers**
+>
+> _Grading runs as a GitHub Actions job — results usually appear within 30 seconds._
 
 You click the checkboxes directly in the comment. When you tick **Submit
 answers**, the comment is rewritten in place with your score, the correct
 answers and an explanation for each, and the `quizme` status turns green.
+
+Expect a short wait. Ticking a checkbox edits the comment, which triggers a
+workflow run — around 12 seconds in practice, of which roughly 7 is GitHub
+queueing and provisioning a runner. Nothing visible happens during it, hence the
+note in the comment.
+
+The answer key is already sitting in that comment as base64, so it is fair to ask
+why revealing it needs a server round trip. Two reasons: GitHub strips
+JavaScript from comment bodies, so there is no client-side code that could decode
+it; and passing the quiz has to write a commit status to unblock the merge, which
+is an authenticated API call regardless. A `<details>` block would reveal
+instantly without JavaScript, but it would make peeking a single idle click and
+destroy the only thing this tool is for.
 
 ---
 
