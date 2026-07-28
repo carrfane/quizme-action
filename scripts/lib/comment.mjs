@@ -16,6 +16,7 @@ export const MARKERS = {
   graded: 'quizme:graded',
   key: 'quizme:key',
   notice: 'quizme:notice',
+  nudge: 'quizme:nudge',
 };
 
 export const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
@@ -181,15 +182,32 @@ export function renderNotice({ title, detail }) {
 }
 
 /**
- * Append a line to an existing body without disturbing its markers.
- * Used for the "you did not answer every question" nudge.
+ * Add (or replace) the "you have not answered everything" nudge on a live quiz.
+ *
+ * Unticking Submit is deliberate: it makes our own edit stop matching the
+ * workflow's trigger filter, and it forces the author to resubmit explicitly
+ * once they have fixed their selections.
  */
-export function appendNotice(body, notice) {
-  const keyMatch = body.match(/\n?<!--\s*quizme:key\s+\S+\s*-->/);
-  if (!keyMatch) return truncate(`${body}\n\n${notice}`);
-  const keyBlock = keyMatch[0];
-  const withoutKey = body.replace(keyBlock, '');
-  return truncate(`${withoutKey}\n\n${notice}${keyBlock}`);
+export function withNudge(body, notice) {
+  const nudgeBlock = `<!-- ${MARKERS.nudge} -->\n> [!WARNING]\n> ${notice}\n<!-- /${MARKERS.nudge} -->`;
+
+  let next = stripNudge(body).replace(
+    new RegExp(`^\\s*-\\s*\\[[xX]\\]\\s*\\*\\*Submit answers\\*\\*`, 'm'),
+    SUBMIT_UNCHECKED,
+  );
+
+  const keyMatch = next.match(/\n*<!--\s*quizme:key\s+\S+\s*-->/);
+  if (!keyMatch) return truncate(`${next}\n\n${nudgeBlock}`);
+
+  next = next.replace(keyMatch[0], '');
+  return truncate(`${next.trimEnd()}\n\n${nudgeBlock}\n${keyMatch[0].trim()}`);
+}
+
+export function stripNudge(body) {
+  return body.replace(
+    new RegExp(`\\n*<!-- ${MARKERS.nudge} -->[\\s\\S]*?<!-- /${MARKERS.nudge} -->`, 'g'),
+    '',
+  );
 }
 
 function splitQuestionBlocks(body) {

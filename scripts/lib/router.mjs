@@ -36,11 +36,7 @@ async function routePullRequest({ payload, inputs, lookups }) {
   }
 
   const pr = payload.pull_request;
-  const base = {
-    prNumber: pr.number,
-    headSha: pr.head.sha,
-    actor: pr.user?.login ?? '',
-  };
+  const base = { ...prContext(pr), actor: pr.user?.login ?? '' };
 
   // A fork's head sha is not fetchable with the default token and its author
   // cannot edit our comment, so bail before spending any API calls.
@@ -99,10 +95,9 @@ async function routeIssueComment({ payload, inputs, lookups }) {
     return none('comment is not a quiz submission or a /quizme command');
   }
 
-  const prNumber = payload.issue.number;
-  const pr = await lookups.getPullRequest(prNumber);
+  const pr = await lookups.getPullRequest(payload.issue.number);
   const author = pr.user?.login ?? '';
-  const base = { prNumber, headSha: pr.head.sha, actor };
+  const base = { ...prContext(pr), actor };
 
   if (isSkip) {
     return { mode: 'bypass', reason: `bypassed by @${actor}`, ...base };
@@ -125,6 +120,18 @@ async function routeIssueComment({ payload, inputs, lookups }) {
   };
 }
 
+/** Everything downstream modes need about the PR, in one shape. */
+function prContext(pr) {
+  return {
+    prNumber: pr.number,
+    headSha: pr.head?.sha ?? '',
+    baseSha: pr.base?.sha ?? '',
+    baseRef: pr.base?.ref ?? '',
+    prUrl: pr.html_url ?? '',
+    title: pr.title ?? '',
+  };
+}
+
 function isTargeted({ actor, author, inputs }) {
   const lower = (actor ?? '').toLowerCase();
   if (lower && lower === (author ?? '').toLowerCase()) return true;
@@ -141,5 +148,5 @@ function findGraded(comments) {
 }
 
 function none(reason) {
-  return { mode: 'none', reason, prNumber: 0, headSha: '', actor: '' };
+  return { mode: 'none', reason, prNumber: 0, headSha: '', actor: '', baseSha: '', baseRef: '' };
 }
