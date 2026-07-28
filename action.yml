@@ -1,4 +1,9 @@
-name: quizme
+# The Marketplace listing name, which must not collide with an existing GitHub
+# user or organisation -- and a user named `Quizme` already exists, so `quizme`
+# would be rejected at publish time. Nothing users type changes: the repository
+# is still `quizme-action`, the command is still `/quizme`, and the default
+# commit status context is still `quizme`.
+name: quiz-my-ai-slop
 description: Quiz a pull request author on their own diff, and block merge until they answer.
 author: carrfane
 
