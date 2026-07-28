@@ -1,0 +1,5 @@
+node_modules/
+.quizme/
+quizme-pr/
+*.log
+.DS_Store

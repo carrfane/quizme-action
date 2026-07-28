@@ -1,0 +1,14 @@
+{
+  "name": "quizme-action",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Action that quizzes a PR author on their own diff before merge",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
