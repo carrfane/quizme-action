@@ -18,6 +18,7 @@ import {
   parseQuizKey,
   parseSelections,
   allAnswered,
+  isSubmitted,
   withNudge,
 } from './comment.mjs';
 import { gradeQuiz } from './grade.mjs';
@@ -122,7 +123,23 @@ async function generateQuiz({ decision, inputs, deps, log, attempt }) {
 }
 
 async function grade({ decision, inputs, client, log }) {
-  const parsed = parseQuizKey(decision.commentBody);
+  // Never trust the webhook payload's body here. GitHub delivers issue_comment
+  // events at least once, and a duplicate or out-of-order delivery previously
+  // let a second run overwrite a correct score with a stale one. Re-reading the
+  // live comment makes grading idempotent.
+  const body = await liveCommentBody(client, decision, log);
+
+  if (hasMarker(body, MARKERS.graded)) {
+    log('quizme: this comment is already graded; ignoring a duplicate event');
+    return { action: 'grade-already-done' };
+  }
+
+  if (!isSubmitted(body)) {
+    log('quizme: submit is no longer ticked on the live comment; nothing to grade');
+    return { action: 'grade-not-submitted' };
+  }
+
+  const parsed = parseQuizKey(body);
 
   if (!parsed?.quiz) {
     await client.updateComment(
@@ -145,7 +162,7 @@ async function grade({ decision, inputs, client, log }) {
   }
 
   const quiz = parsed.quiz;
-  const selections = parseSelections(decision.commentBody);
+  const selections = parseSelections(body);
 
   if (!allAnswered(selections, quiz.questions.length)) {
     const missing = quiz.questions
@@ -155,7 +172,7 @@ async function grade({ decision, inputs, client, log }) {
     await client.updateComment(
       decision.commentId,
       withNudge(
-        decision.commentBody,
+        body,
         `Not submitted yet: tick exactly one option for ${listNumbers(missing)}, ` +
           'then tick **Submit answers** again.',
       ),
@@ -244,6 +261,21 @@ async function skip({ decision, inputs, client, log }) {
 
   log(`quizme: skipped (${decision.reason})`);
   return { action: 'skip', reason: decision.reason };
+}
+
+/**
+ * The authoritative comment body at grade time. Falls back to the webhook
+ * payload only if the read fails, so a transient API blip still grades rather
+ * than silently doing nothing.
+ */
+async function liveCommentBody(client, decision, log) {
+  try {
+    const live = await client.getComment(decision.commentId);
+    if (typeof live?.body === 'string' && live.body !== '') return live.body;
+  } catch (error) {
+    log(`quizme: could not re-read comment ${decision.commentId} (${error.message}); using the event payload`);
+  }
+  return decision.commentBody ?? '';
 }
 
 /** Idempotency: reuse our own comment instead of stacking new ones. */

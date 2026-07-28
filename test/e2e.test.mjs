@@ -86,6 +86,11 @@ async function startFakeGitHub({ comments = [], files = null, pr = PR } = {}) {
       if (req.method === 'GET' && /\/issues\/\d+\/comments$/.test(pathname)) {
         return send(200, state.comments);
       }
+      if (req.method === 'GET' && /\/issues\/comments\/\d+$/.test(pathname)) {
+        const id = Number(pathname.split('/').pop());
+        const existing = state.comments.find((c) => c.id === id);
+        return existing ? send(200, existing) : send(404, { message: 'no such comment' });
+      }
       if (req.method === 'POST' && /\/issues\/\d+\/comments$/.test(pathname)) {
         const comment = {
           id: (state.nextId += 1),
@@ -227,10 +232,12 @@ test('e2e: the full answer cycle unblocks the PR and reveals the key', async (t)
     .replace('- [ ] C. c2', '- [x] C. c2')
     .replace(SUBMIT_UNCHECKED, SUBMIT_CHECKED);
 
+  // Ticking a checkbox IS the edit, so the stored comment already holds the
+  // answered body by the time the event is delivered.
   const s = await scenario({
     eventName: 'issue_comment',
     payload: commentPayload(answered),
-    comments: [{ id: 77, body: quizBody }],
+    comments: [{ id: 77, body: answered }],
   });
   t.after(s.cleanup);
 
@@ -248,6 +255,43 @@ test('e2e: the full answer cycle unblocks the PR and reveals the key', async (t)
   assert.match(s.github.state.statuses.at(-1).description, /2\/2/);
 });
 
+test('e2e: a duplicate webhook delivery cannot clobber a good score', async (t) => {
+  // Reproduces a failure seen on real GitHub: several `edited` deliveries for
+  // one submission, where a later run re-graded and overwrote 2/3 with 1/3.
+  const quizBody = renderQuiz({ sha: 'aaaa1111', quiz: QUIZ });
+  const answered = quizBody
+    .replace('- [ ] B. b1', '- [x] B. b1')
+    .replace('- [ ] C. c2', '- [x] C. c2')
+    .replace(SUBMIT_UNCHECKED, SUBMIT_CHECKED);
+
+  const s = await scenario({
+    eventName: 'issue_comment',
+    payload: commentPayload(answered),
+    comments: [{ id: 77, body: answered }],
+  });
+  t.after(s.cleanup);
+
+  await main(['--phase=resolve'], s.env);
+  await main(['--phase=run'], s.env);
+
+  const firstResult = s.github.state.comments.find((c) => c.id === 77).body;
+  assert.ok(firstResult.includes('2 / 2'), 'graded correctly the first time');
+  const statusCount = s.github.state.statuses.length;
+
+  // A second, garbled delivery for the same comment.
+  const stale = quizBody
+    .replace('- [ ] A. a1', '- [x] A. a1')
+    .replace(SUBMIT_UNCHECKED, SUBMIT_CHECKED);
+  await writeFile(s.env.GITHUB_EVENT_PATH, JSON.stringify(commentPayload(stale)), 'utf8');
+
+  await main(['--phase=resolve'], s.env);
+  await main(['--phase=run'], s.env);
+
+  const afterDuplicate = s.github.state.comments.find((c) => c.id === 77).body;
+  assert.equal(afterDuplicate, firstResult, 'the graded comment is byte-identical');
+  assert.equal(s.github.state.statuses.length, statusCount, 'no extra status write');
+});
+
 test('e2e: an incomplete submission leaves the status untouched', async (t) => {
   const quizBody = renderQuiz({ sha: 'aaaa1111', quiz: QUIZ });
   const partial = quizBody
@@ -257,7 +301,7 @@ test('e2e: an incomplete submission leaves the status untouched', async (t) => {
   const s = await scenario({
     eventName: 'issue_comment',
     payload: commentPayload(partial),
-    comments: [{ id: 77, body: quizBody }],
+    comments: [{ id: 77, body: partial }],
   });
   t.after(s.cleanup);
 

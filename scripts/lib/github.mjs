@@ -73,6 +73,7 @@ export function createClient({
     getPullRequest: (number) => json('GET', `/pulls/${number}`),
     listChangedFiles: (number) => paginate(`/pulls/${number}/files`),
     listComments: (number) => paginate(`/issues/${number}/comments`),
+    getComment: (id) => json('GET', `/issues/comments/${id}`),
     createComment: (number, body) => json('POST', `/issues/${number}/comments`, { body }),
     updateComment: (id, body) => json('PATCH', `/issues/comments/${id}`, { body }),
 
