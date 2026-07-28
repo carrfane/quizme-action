@@ -297,14 +297,22 @@ async function liveCommentBody(client, decision, log) {
   return decision.commentBody ?? '';
 }
 
-/** Idempotency: reuse our own comment instead of stacking new ones. */
+/**
+ * Idempotency: reuse our own comment instead of stacking new ones.
+ *
+ * Graded comments count. Observed on a real PR: `/quizme` after answering left
+ * the graded comment in place and posted a second one, so the thread grew a new
+ * bot comment per regeneration.
+ */
 async function findQuizComment(client, prNumber) {
   const comments = await client.listComments(prNumber);
-  const ours = comments.filter(
-    (comment) => hasMarker(comment.body, MARKERS.quiz) || hasMarker(comment.body, MARKERS.notice),
+  const ours = comments.filter((comment) =>
+    OUR_MARKERS.some((marker) => hasMarker(comment.body, marker)),
   );
   return ours.length > 0 ? ours[ours.length - 1] : null;
 }
+
+const OUR_MARKERS = [MARKERS.quiz, MARKERS.notice, MARKERS.graded];
 
 async function upsert(client, prNumber, existing, body) {
   return existing ? client.updateComment(existing.id, body) : client.createComment(prNumber, body);

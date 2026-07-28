@@ -5,6 +5,7 @@ import { runMode } from '../scripts/lib/modes.mjs';
 import { readInputs } from '../scripts/lib/config.mjs';
 import {
   renderQuiz,
+  renderResults,
   parseQuizKey,
   isSubmitted,
   hasMarker,
@@ -181,6 +182,64 @@ test('a run that ends on a tool call explains itself', async () => {
 
   assert.equal(result.action, 'generate-failed');
   assert.match(client.calls.created[0].body, /ended on a tool call/);
+});
+
+test('/quizme after answering reuses the graded comment rather than adding another', async () => {
+  // Observed on a real PR: regenerating left the graded comment and posted a
+  // second bot comment, so the thread grew one per /quizme.
+  const graded = renderResults({
+    sha: 'oldsha',
+    quiz,
+    selections: { 1: 'B', 2: 'C', 3: 'A' },
+    result: {
+      correct: 3,
+      total: 3,
+      outcomes: quiz.questions.map((q, i) => ({
+        index: i + 1,
+        selected: q.answer,
+        expected: q.answer,
+        correct: true,
+      })),
+    },
+    actor: 'carrfane',
+  });
+  const client = fakeClient([{ id: 42, body: graded }]);
+
+  await runMode({
+    decision: decision({ reason: '/quizme requested by @carrfane' }),
+    inputs: inputs(),
+    client,
+    deps: okDeps(),
+    log: silent,
+  });
+
+  assert.equal(client.calls.created.length, 0, 'no second comment');
+  assert.equal(client.calls.updated.length, 1);
+  assert.equal(client.calls.updated[0].id, 42);
+  assert.ok(hasMarker(client.calls.updated[0].body, MARKERS.quiz), 'it becomes a fresh quiz');
+  assert.ok(!hasMarker(client.calls.updated[0].body, MARKERS.graded), 'the old result is replaced');
+});
+
+test('bypass also retires a graded comment rather than leaving it clickable', async () => {
+  const graded = renderResults({
+    sha: 'oldsha',
+    quiz,
+    selections: { 1: 'B', 2: 'C', 3: 'A' },
+    result: { correct: 3, total: 3, outcomes: quiz.questions.map((q, i) => ({ index: i + 1, selected: q.answer, expected: q.answer, correct: true })) },
+    actor: 'carrfane',
+  });
+  const client = fakeClient([{ id: 42, body: graded }]);
+
+  await runMode({
+    decision: decision({ mode: 'bypass' }),
+    inputs: inputs(),
+    client,
+    deps: {},
+    log: silent,
+  });
+
+  assert.equal(client.calls.updated[0].id, 42);
+  assert.ok(hasMarker(client.calls.updated[0].body, MARKERS.notice));
 });
 
 test('generate updates the existing quiz comment instead of stacking a second', async () => {
