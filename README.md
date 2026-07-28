@@ -64,6 +64,22 @@ Do this step and merging is genuinely blocked until you answer.
 
 Open a pull request. That's it.
 
+### Versions
+
+| Ref | Meaning |
+| --- | --- |
+| `@v1` | Latest `1.x`. Floats forward on patches and features, never on a breaking change. Recommended. |
+| `@v1.0.0` | Exactly that release. Immutable. Use it if you want to decide when to upgrade. |
+| `@<sha>` | A specific commit. The strictest option. |
+| `@main` | Unreleased. Don't. |
+
+`v1` is moved only by `.github/workflows/release.yml`, and only after the test
+suite passes on the tagged commit — so it never advances onto a red build.
+
+Note that the reusable workflow pins the action to `github.job_workflow_sha`, the
+commit of the workflow you called. Whatever ref you write is therefore the ref the
+action code is fetched from too, and the two cannot drift apart mid-run.
+
 ---
 
 ## What it looks like

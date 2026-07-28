@@ -1,0 +1,62 @@
+name: release
+
+# Moves the floating major alias (`v1`) onto a new semver tag.
+#
+# Consumers pin `@v1`, so this tag is the most dangerous ref in the repository: a
+# bad move ships to everyone at once, with no review step. Hence two rules here.
+#
+#   - The alias is only ever moved by this workflow. Doing it by hand is how you
+#     eventually force-push `v1` onto the wrong commit.
+#   - The test suite runs first. If it fails the alias stays where it is, so `v1`
+#     keeps pointing at the last version known to work rather than at whatever
+#     was just tagged.
+#
+# Release a version with:
+#   git tag -a v1.0.1 -m "quizme v1.0.1" && git push origin v1.0.1
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  major-alias:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      # The gate. Everything below only runs on a green suite.
+      - run: npm test
+
+      - name: Move the major alias onto this tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          major="${TAG%%.*}"
+          if [ "$major" = "$TAG" ]; then
+            echo "::error::could not derive a major alias from '$TAG'"
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Annotated, to match the tag it is aliasing.
+          git tag -fa "$major" -m "$major -> $TAG"
+          # Pushing with GITHUB_TOKEN does not retrigger workflows, and the
+          # trigger above only matches full semver anyway, so this cannot loop.
+          git push --force origin "refs/tags/$major"
+
+          echo "$major now points at $TAG ($GITHUB_SHA)"
