@@ -108,6 +108,31 @@ test('the slash command prefix in the filter matches what the router accepts', (
   assert.ok(filterExpression().includes("startsWith(github.event.comment.body, '/quizme')"));
 });
 
+/**
+ * The README's composite example duplicates this filter, so it is a second copy
+ * that can drift silently -- and it is the copy people paste. Pin both sides to
+ * the same literals rather than trusting whoever edits the renderer next.
+ */
+test('the composite example in the README pins the same comment filter', () => {
+  const readme = read('README.md');
+  const literals = [
+    `contains(github.event.comment.body, '${SUBMIT_CHECKED}')`,
+    `contains(github.event.comment.body, '<!-- ${MARKERS.quiz}')`,
+    "startsWith(github.event.comment.body, '/quizme')",
+  ];
+
+  for (const literal of literals) {
+    assert.ok(
+      filterExpression().includes(literal),
+      `the reusable workflow must test for ${JSON.stringify(literal)}`,
+    );
+    assert.ok(
+      readme.includes(literal),
+      `the README composite example must test for ${JSON.stringify(literal)}`,
+    );
+  }
+});
+
 // ------------------------------------------------------------ input contract
 
 test('the reusable workflow forwards every action input', () => {

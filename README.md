@@ -3,6 +3,10 @@
 A GitHub Action that quizzes you on your own pull request, and blocks the merge
 until you answer.
 
+*On the GitHub Marketplace this is listed as **quiz-my-ai-slop**, because a GitHub
+user already owns `quizme`. Nothing you type changes: the repository is
+`quizme-action`, the command is `/quizme`, and the status check is `quizme`.*
+
 It reads the diff with [opencode](https://opencode.ai), writes three
 multiple-choice questions about what the change actually does, and posts them as
 a PR comment with clickable checkboxes. Merging is blocked by a commit status
@@ -80,6 +84,77 @@ Note that the reusable workflow pins the action to `github.job_workflow_sha`, th
 commit of the workflow you called. Whatever ref you write is therefore the ref the
 action code is fetched from too, and the two cannot drift apart mid-run.
 
+### Using the composite action directly
+
+The Marketplace's *Use latest version* button gives you
+`uses: carrfane/quizme-action@v1`. That is the **composite action**, not the
+reusable workflow above — and pasted on its own it will not work. The reusable
+workflow supplies the triggers, the permissions, the comment filter and the
+concurrency group. With the composite, you own all four.
+
+Use it if you need triggers the reusable workflow does not offer. Otherwise use
+the [Quickstart](#quickstart).
+
+<details>
+<summary>Full composite workflow</summary>
+
+```yaml
+name: quizme
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  quizme:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: write
+
+    # `issue_comment` fires on every comment in the repository. Without this
+    # filter a runner starts for all of them, not just quiz traffic. It is also
+    # loop protection: our own grading edit unticks Submit, so the edited body
+    # no longer matches.
+    if: >-
+      (
+        github.event_name == 'pull_request' &&
+        contains(fromJSON('["opened","reopened","ready_for_review","synchronize"]'), github.event.action)
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        (
+          (
+            contains(github.event.comment.body, '<!-- quizme:quiz') &&
+            contains(github.event.comment.body, '- [x] **Submit answers**')
+          ) ||
+          startsWith(github.event.comment.body, '/quizme')
+        )
+      )
+
+    # Grading must not be cancelled halfway through, so no cancel-in-progress.
+    concurrency:
+      group: quizme-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # No checkout of your own. The action checks the pull request out itself,
+      # and only when it is actually generating a quiz.
+      - uses: carrfane/quizme-action@v1
+        with:
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: anthropic/claude-sonnet-4-5
+          users: your-github-login
+```
+
+</details>
+
 ---
 
 ## What it looks like
@@ -137,7 +212,8 @@ destroy the only thing this tool is for.
 | `opencode_version` | `1.18.4` | Pinned opencode CLI version |
 | `api_key_env` | *(derived)* | Override the env var the key is exported as |
 | `status_context` | `quizme` | Commit status name; this is what you add to branch protection |
-| `runs_on` | `ubuntu-latest` | Runner label |
+| `runs_on` | `ubuntu-latest` | Runner label. **Reusable workflow only** — with the composite you set `runs-on:` on your own job |
+| `github_token` | `${{ github.token }}` | Token used for the REST API. **Composite only** — the reusable workflow always passes its own |
 
 | Secret | Required | Description |
 | --- | --- | --- |
@@ -482,7 +558,7 @@ bug class that would otherwise fail silently.
 
 ```bash
 npm ci        # yaml, for the contract tests only
-npm test      # 156 tests, no network, no Docker
+npm test      # 242 tests, no network, no Docker
 ```
 
 The action itself has **zero runtime dependencies** — plain ESM run by the
